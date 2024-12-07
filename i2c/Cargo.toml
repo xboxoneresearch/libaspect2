@@ -1,0 +1,16 @@
+[package]
+name = "i2c"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+embedded-hal = "1.0.0"
+indicatif = "0.17.9"
+log = "0.4.22"
+simple_logger = "5.0.0"
+
+[dependencies.libftd2xx]
+version = "0.33.1"
+# statically link the vendor library, defaults to dynamic if not set
+# this will make things "just work" on Linux and Windows
+features = ["static"]
