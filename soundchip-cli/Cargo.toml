@@ -1,0 +1,10 @@
+[package]
+name = "soundchip-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+indicatif = "0.17.9"
+log = "0.4.22"
+simple_logger = "5.0.0"
+i2c = { path = "../i2c" }
