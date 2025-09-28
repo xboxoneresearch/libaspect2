@@ -1,6 +1,7 @@
-use embedded_hal::i2c::{ErrorKind, I2c};
-use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
-use log::debug;
+use embedded_hal::i2c::I2c;
+
+pub const FLASH_SIZE: usize = 0x24400; // 145KB
+const STATUS_PREFIX_SZ: usize = 2;
 
 #[allow(non_camel_case_types)]
 #[repr(u8)]
@@ -83,19 +84,33 @@ impl Into<u8> for Isd9160Sounds {
     }
 }
 
-pub struct Isd9160I2c {
-    device: Box<dyn I2c<Error = ErrorKind> + 'static>,
+pub struct Isd9160<T>
+{
+    device: T,
+    read_chunk_size: usize,
+    position: u64,
 }
 
-impl Isd9160I2c {
+impl<T> Isd9160<T>
+where
+    T: I2c
+{
     /// Nuvoton ISD9160 Soundcorder Chip (RF Unit)
     pub const I2C_ADDR: u8 = 0x5A;
-    pub const FLASH_SIZE: u32 = 0x24400; // 145KB
 
-    pub fn new(device: impl I2c<Error = ErrorKind> + 'static) -> Self {
+    pub fn new(device: T) -> Self {
         Self {
-            device: Box::new(device),
+            device: device,
+            read_chunk_size: 0x40,
+            position: 0,
         }
+    }
+
+    pub fn flash_size(&self) -> usize { FLASH_SIZE }
+    pub fn read_chunk_size(&self) -> usize { self.read_chunk_size }
+    pub fn set_chunk_size(&mut self, value: usize)
+    {
+        self.read_chunk_size = value
     }
 
     pub fn read_interrupt(&mut self) -> u16 {
@@ -108,7 +123,7 @@ impl Isd9160I2c {
         u16::from_le_bytes(read)
     }
 
-    pub fn read_register<T: Into<u8>>(&mut self, register: T) -> u32 {
+    pub fn read_register<U: Into<u8>>(&mut self, register: U) -> u32 {
         let cmd = [Isd9160Commands::CMD_REG_READ.into(), register.into()];
         let mut read = [0u8; 4];
         self.device
@@ -118,7 +133,7 @@ impl Isd9160I2c {
         u32::from_le_bytes(read)
     }
 
-    pub fn write_register<T: Into<u8>>(&mut self, register: T, data: &[u8]) {
+    pub fn write_register<U: Into<u8>>(&mut self, register: U, data: &[u8]) {
         let mut cmd = vec![Isd9160Commands::CMD_REG_WRITE.into(), register.into()];
         cmd.extend_from_slice(&data);
         self.device
@@ -137,7 +152,7 @@ impl Isd9160I2c {
             .expect("Failed to reset");
     }
 
-    pub fn play_sound<T: Into<u8>>(&mut self, sound_index: T) {
+    pub fn play_sound<U: Into<u8>>(&mut self, sound_index: U) {
         self.device
             .write(
                 Self::I2C_ADDR,
@@ -153,8 +168,8 @@ impl Isd9160I2c {
     }
 
     /// This reads 6 bytes at a time
-    pub fn read_data(&mut self, addr: u32) -> [u8; 6] {
-        let mut buf = vec![0u8; 8];
+    fn read_data(&mut self, addr: u32) -> Vec<u8> {
+        let mut buf = vec![0u8; self.read_chunk_size + STATUS_PREFIX_SZ];
 
         let mut cmd = vec![Isd9160Commands::CMD_FLASH_READ.into()];
         let addr_bytes = addr.to_le_bytes();
@@ -164,17 +179,59 @@ impl Isd9160I2c {
             .write_read(Self::I2C_ADDR, &cmd, &mut buf)
             .expect("Failed to read data");
 
-        buf[2..8].try_into().unwrap()
+        buf[STATUS_PREFIX_SZ..].to_vec()
     }
+}
 
-    pub fn read_flash(&mut self, writer: Box<&mut dyn std::io::Write>) {
-        for addr in (0..Self::FLASH_SIZE)
-            .step_by(6)
-            .progress()
-            .with_style(ProgressStyle::default_spinner().template("[{elapsed_precise}, eta:{eta}] {bar:40.cyan/blue} {bytes} / {total_bytes}").unwrap())
-        {
-            let ret = self.read_data(addr);
-            writer.write(&ret).expect("Failed to write read data");
+impl<T> std::io::Seek for Isd9160<T>
+where
+    T: I2c
+{
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        use std::io::SeekFrom;
+        let new_pos = match pos {
+            SeekFrom::Start(offset) => offset,
+            SeekFrom::End(offset) => {
+                let end = FLASH_SIZE as i64;
+                let np = end.checked_add(offset).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Seek out of bounds"))?;
+                if np < 0 { return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Seek before start")); }
+                np as u64
+            }
+            SeekFrom::Current(offset) => {
+                let cur = self.position as i64;
+                let np = cur.checked_add(offset).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Seek out of bounds"))?;
+                if np < 0 { return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Seek before start")); }
+                np as u64
+            }
+        };
+        if new_pos > FLASH_SIZE as u64 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Seek past end of flash"));
         }
+        self.position = new_pos;
+        Ok(self.position)
+    }
+}
+
+impl<T> std::io::Read for Isd9160<T>
+where
+    T: I2c
+{
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.position >= FLASH_SIZE as u64 {
+            return Ok(0);
+        }
+        let max_len = (FLASH_SIZE as u64 - self.position) as usize;
+        let to_read = buf.len().min(max_len);
+        let mut total_read = 0;
+        while total_read < to_read {
+            let addr = self.position as u32;
+            let chunk = self.read_data(addr);
+            let chunk_start = 0;
+            let chunk_end = (to_read - total_read).min(self.read_chunk_size);
+            buf[total_read..total_read+chunk_end].copy_from_slice(&chunk[chunk_start..chunk_end]);
+            self.position += chunk_end as u64;
+            total_read += chunk_end;
+        }
+        Ok(total_read)
     }
 }
