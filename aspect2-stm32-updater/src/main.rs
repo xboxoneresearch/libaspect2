@@ -164,9 +164,12 @@ fn main() -> Result<()> {
             );
 
             let (offset, size) = match section {
-                Section::Preloader => (PRELOADER_OFFSET, SECTION_PRELOADER_SZ),
-                Section::UserApp => (TOMBSTONE_UAPP_OFFSET, SECTION_USERAPP_SZ),
+                Section::Preloader => (PRELOADER_OFFSET, Some(SECTION_PRELOADER_SZ)),
+                Section::UserApp => (TOMBSTONE_UAPP_OFFSET, None),
             };
+
+            // We do not have a fixed size of userapp
+            let size = size.unwrap_or(filebuf.len());
 
             let start_page = page_for_offset!(offset);
             let page_count = pagecount_for_size!(size);
