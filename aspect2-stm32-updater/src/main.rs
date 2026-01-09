@@ -119,6 +119,7 @@ enum Command {
         /// Firmware binary
         binary: PathBuf,
     },
+    /// Read firmware section
     Read {
         /// Section to read
         section: Section,
