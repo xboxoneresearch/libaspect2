@@ -1,17 +1,16 @@
-use std::io::{Cursor, Read};
+use std::fmt::Display;
+use std::fs::File;
+use std::io::{Cursor, Read, Write};
 use std::time::Duration;
 use std::path::PathBuf;
 use anyhow::{anyhow, Result};
 use binrw::{
     binrw,    // #[binrw] attribute
     BinRead,  // trait for reading
-    BinWrite, // trait for writing
 };
 use clap::{Parser, Subcommand, ValueEnum};
-use indicatif::ProgressStyle;
-use indicatif::{ProgressBar};
-use i2c::I2cFtBitbang;
-use i2c::Ft4232h;
+use indicatif::{ProgressStyle, ProgressBar};
+use i2c::{I2cFtBitbang, Ft4232h};
 use stm32_bootloader_client::{ProtocolVersion, Stm32, Stm32i2c};
 
 /*
@@ -36,7 +35,7 @@ use stm32_bootloader_client::{ProtocolVersion, Stm32, Stm32i2c};
 * **Preloader code**:   `0x0800_0000 .. 0x0800_07E0`
 *   **Tombstone IAPL**: `0x0800_07E0 .. 0x0800_0800`
 *   **Tombstone UAPP**: `0x0800_0800 .. 0x0800_0820`
-* **User code**:        `0x0800_0820 .. 0x0800_8000`
+* **User code**:        `0x0800_0A00 .. 0x0800_8000`
 */
 
 const TOMBSTONE_IAPL_MAGIC: &[u8; 4] = b"IAPL";
@@ -45,10 +44,11 @@ const TOMBSTONE_UAPP_MAGIC: &[u8; 4] = b"UAPP";
 const PAGE_SZ: usize = 0x800; // 2KB
 
 const FLASH_BASE: usize = 0x0800_0000;
-const FLASH_SZ: usize = 0x8000; // 32KB
+const _FLASH_SZ: usize = 0x8000; // 32KB
 const TOMBSTONE_SZ: usize = 0x20; // 32 bytes
+
 const SECTION_PRELOADER_SZ: usize = PAGE_SZ; // 2KB
-const SECTION_USERAPP_SZ: usize = FLASH_SZ - SECTION_PRELOADER_SZ;
+const SECTION_USERAPP_SZ: usize = _FLASH_SZ - SECTION_PRELOADER_SZ;
 
 // Start of IAPL / Preloader firmware binary
 const PRELOADER_OFFSET: usize = FLASH_BASE;
@@ -57,8 +57,10 @@ const TOMBSTONE_IAPL_OFFSET: usize = PRELOADER_OFFSET + PRELOADER_SZ;
 
 // Start of userapp firmware binary
 const TOMBSTONE_UAPP_OFFSET: usize = TOMBSTONE_IAPL_OFFSET + TOMBSTONE_SZ;
-const USERAPP_OFFSET: usize = TOMBSTONE_UAPP_OFFSET + TOMBSTONE_SZ;
-const USERAPP_SZ: usize = SECTION_USERAPP_SZ - TOMBSTONE_SZ;
+const USERAPP_OFFSET: usize = TOMBSTONE_UAPP_OFFSET + 0x200;
+const USERAPP_SZ: usize = SECTION_USERAPP_SZ - 0x200;
+
+const STM32_BOOTLOADER_I2C_ADDR: u8 = 0x56;
 
 #[binrw]
 #[brw(little)]
@@ -79,6 +81,12 @@ impl Tombstone {
     }
 }
 
+impl Display for Tombstone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Version={}.{}, Size={:#04X}, CRC32={:#04X}", self.ver_major, self.ver_minor, self.size, self.crc)
+    }
+}
+
 // Macro: convert absolute address to page index
 macro_rules! page_for_offset {
     ($addr:expr) => {
@@ -90,13 +98,6 @@ macro_rules! page_for_offset {
 macro_rules! pagecount_for_size {
     ($sz:expr) => {
         (($sz + PAGE_SZ - 1) / PAGE_SZ)
-    };
-}
-
-// Macro: compute page sequence for erase
-macro_rules! pageseq_for_erase {
-    ($page:expr,$count:expr) => {
-        ($page as u16..($page + $count) as u16).collect::<Vec<u16>>()
     };
 }
 
@@ -116,6 +117,12 @@ enum Command {
         /// Section to flash
         section: Section,
         /// Firmware binary
+        binary: PathBuf,
+    },
+    Read {
+        /// Section to read
+        section: Section,
+        /// Output binary
         binary: PathBuf,
     },
     /// Retrieve metadata of currently flashed firmware components
@@ -141,15 +148,50 @@ fn main() -> Result<()> {
         std::thread::sleep(Duration::from_nanos(nanos));
     }
 
-
     let dev = Ft4232h::with_description("Facet2 FabA+ C")?;
     let mut i2c_if = I2cFtBitbang::new(dev);
 
-    let config = stm32_bootloader_client::Config::i2c_address(0x56);
+    let mut config = stm32_bootloader_client::Config::i2c_address(STM32_BOOTLOADER_I2C_ADDR);
+    config.mass_erase_max_ns = Duration::from_secs(1).as_nanos() as u64;
     let mut stm32 = Stm32::new(Stm32i2c::new(&mut i2c_if, config), ProtocolVersion::Version1_1);
 
-
     match args.command {
+        Command::Read { section, binary} => {
+            let (offset, size) = match section {
+                Section::Preloader => (PRELOADER_OFFSET, SECTION_PRELOADER_SZ),
+                Section::UserApp => (TOMBSTONE_UAPP_OFFSET, SECTION_USERAPP_SZ),
+            };
+
+            let chip_id = stm32.get_chip_id()?;
+            println!("[+] Chip ID: 0x{chip_id:x}");
+
+            let progress = ProgressBar::new(size as u64)
+                .with_style(
+                    ProgressStyle::default_spinner()
+                        .template("[{elapsed_precise}, eta:{eta}] {msg} {bar:40.cyan/blue} {bytes} / {total_bytes} ({binary_bytes_per_sec})")
+                        .unwrap()
+                );
+
+            let mut filebuf = vec![0u8; size];
+            println!("[+] Reading firmware...");
+            progress.set_message("Reading");
+            let mut position = 0;
+            for i in (offset..offset + size).step_by(0x80) {
+                stm32.read_memory(i as u32, &mut filebuf[position..position + 0x80])?;
+                position += 0x80;
+                progress.set_position(position as u64);
+            }
+
+            let success = stm32.verify_crc(offset as u32, &filebuf);
+            if let Err(e) = success {
+                println!("[!] Verification failed: {e:?}...");
+                return Err(anyhow!("Verification failed"));
+            }
+
+            let mut f = File::open(binary)?;
+            f.write_all(&filebuf)?;
+            println!("[*] Done");
+        },
         Command::Flash { binary, section } => {
             if !binary.exists() {
                 return Err(anyhow!("Binary file does not exist"));
@@ -173,7 +215,6 @@ fn main() -> Result<()> {
 
             let start_page = page_for_offset!(offset);
             let page_count = pagecount_for_size!(size);
-            let page_seq = pageseq_for_erase!(start_page, page_count);
             println!("[*] About to write offset {:#08X} - {:#08X} ({:#X} bytes)", offset, offset + size, size);
             println!("[*] Start page: {start_page}, count: {page_count}");
 
@@ -192,7 +233,7 @@ fn main() -> Result<()> {
                 );
 
             println!("[+] Erasing flash...");
-            stm32.erase_pages(&page_seq, &mut delay)?;
+            stm32.erase_pages(start_page as u16, page_count as u16, &mut delay)?;
 
             println!("[+] Writing firmware...");
             progress.set_message("Writing");
@@ -202,33 +243,41 @@ fn main() -> Result<()> {
 
             println!("[+] Verifying firmware...");
             progress.set_message("Verifying");
-            let success = stm32.verify(offset as u32, &filebuf, |p|{
-                progress.set_position(p.bytes_complete as u64);
-            });
+            let success = stm32.verify_crc(offset as u32, &filebuf);
 
             if let Err(e) = success {
                 // So bootloader can start after power toggle
                 println!("[!] Verification failed: {e:?}, erasing flash...");
                 stm32.erase_flash(&mut delay)?;
             }
+            println!("[*] Done");
         },
         Command::Wipe => {
             println!("[!] Wiping flash..");
             stm32.erase_flash(&mut delay)?;
+            println!("[*] Done");
         },
         Command::Info => {
             let mut out = [0; TOMBSTONE_SZ];
 
-            for (offset, magic) in [
-                (TOMBSTONE_IAPL_OFFSET, TOMBSTONE_IAPL_MAGIC), (TOMBSTONE_UAPP_OFFSET, TOMBSTONE_UAPP_MAGIC)
+            for (ts_offset, magic, data_offset) in [
+                (TOMBSTONE_IAPL_OFFSET, TOMBSTONE_IAPL_MAGIC, PRELOADER_OFFSET), (TOMBSTONE_UAPP_OFFSET, TOMBSTONE_UAPP_MAGIC, USERAPP_OFFSET)
             ] {
-                stm32.read_memory(offset as u32, &mut out)?;
+                stm32.read_memory(ts_offset as u32, &mut out)?;
                 let header = to_tombstone_struct(&out);
                 if &header.magic == magic {
-                    println!("Magic '{}' @ {offset:#08X}", header.magic());
-                    println!("{header:?}");
+                    let hash_result = stm32.get_memory_checksum(data_offset as u32, header.size as u32);
+
+                    let hash_valid = match hash_result {
+                        Ok(chksum) => chksum == header.crc,
+                        Err(_) => false,
+                    };
+                    println!("Magic '{}' @ {ts_offset:#08X}", header.magic());
+                    println!("{header}");
+
+                    println!("Hash valid: {}", if hash_valid { "✅" } else { "❌" });
                 } else {
-                    eprintln!("No firmware / tombstone found @ {offset:#08X}");
+                    eprintln!("No firmware / tombstone found @ {ts_offset:#08X}");
                 }
             }
         },
@@ -259,13 +308,6 @@ mod tests {
         assert_eq!(pagecount_for_size!(0x800), 1);
         assert_eq!(pagecount_for_size!(0x1000), 2);
         assert_eq!(pagecount_for_size!(0x1001), 3);
-    }
-
-    #[test]
-    fn test_pageseq_for_erase() {
-        assert_eq!(&[0], pageseq_for_erase!(0, 1).as_slice());
-        assert_eq!(&[0, 1], pageseq_for_erase!(0, 2).as_slice());
-        assert_eq!(&[1, 2, 3], pageseq_for_erase!(1, 3).as_slice());
     }
 
     #[test]
