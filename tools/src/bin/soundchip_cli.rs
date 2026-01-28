@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
-use i2c::I2cFtBitbang;
-use i2c::{Isd9160, Isd9160Sounds};
-use i2c::Ft4232h;
+use libaspect2::Ft4232h;
+use libaspect2::i2c::i2c_bitbang::I2cFtBitbang;
+use libaspect2::i2c::isd9160::{Isd9160, Isd9160Sounds};
 use indicatif::{ProgressIterator, ProgressStyle};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

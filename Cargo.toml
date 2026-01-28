@@ -1,13 +1,21 @@
 [package]
-name = "i2c"
+name = "libaspect2"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+
+[workspace]
+members = [
+    "tools"
+]
 
 [dependencies]
 embedded-hal = "1.0.0"
+bitflags = "2.6.0"
+thiserror = "2.0.3"
 
 [dependencies.libftd2xx]
 version = "0.33.1"
 # statically link the vendor library, defaults to dynamic if not set
 # this will make things "just work" on Linux and Windows
 features = ["static"]
+
