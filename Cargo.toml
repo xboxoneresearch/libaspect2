@@ -5,6 +5,7 @@ edition = "2024"
 
 [workspace]
 members = [
+    "aspect2-stm32-updater",
     "tools"
 ]
 

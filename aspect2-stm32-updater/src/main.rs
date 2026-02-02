@@ -10,7 +10,7 @@ use binrw::{
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use indicatif::{ProgressStyle, ProgressBar};
-use i2c::{I2cFtBitbang, Ft4232h};
+use libaspect2::{I2cFtBitbang, Ft4232h};
 use stm32_bootloader_client::{ProtocolVersion, Stm32, Stm32i2c};
 
 /*
