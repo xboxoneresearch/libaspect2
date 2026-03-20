@@ -1,15 +1,60 @@
 /// High-level eMMC SPI Reader
-/// 
+///
 /// This module provides a clean, high-level API for reading from the eMMC chip,
 /// using the backend abstraction to work with any SPI implementation.
+use std::fmt;
 
-use crate::error::Error;
-use super::protocol::commands::{Register, status, transfer_config};
+use deku::{DekuContainerRead, DekuRead};
+
 use super::backend::SpiBackend;
+use super::protocol::commands::{Register, status, transfer_config};
+use crate::error::Error;
+
+//Development Mode, SMCFWKey:Devkit
+const B1SMCBL_HASH_DEVKIT: [u8; 16] = hex_literal::hex!("C0DE15B90000FFFFA5A55A5A1234FEDC");
+//# Production Mode, SMCFWKey:rtlA
+const B1SMCBL_HASH_RTL_A: [u8; 16] = hex_literal::hex!("2C0278DBD3716D1996C5E5A4560B3F6A");
+// # Production Mode, SMCFWKey:rtlB
+const B1SMCBL_HASH_RTL_B: [u8; 16] = hex_literal::hex!("40427E9153E88CA7B2BD3812FEB69B65");
+// # Production Mode, SMCFWKey:rtlC
+const B1SMCBL_HASH_RTL_C: [u8; 16] = hex_literal::hex!("A3192969B3B3068F1246B9B4EF18E99E");
+// # Production Mode, SMCFWKey:rtlD
+const B1SMCBL_HASH_RTL_D: [u8; 16] = hex_literal::hex!("DF219ABE760F9B32BCBE86C254010F52");
+
+#[derive(Debug, DekuRead)]
+struct SMC_FUSES {
+    ECID: [u8; 8],
+    Exp1SMCBLDigest: [u8; 16],
+    RsvdPublic: [u8; 8],
+    RsvdPrivate: [u8; 8],
+    ChipID: [u8; 12],
+    SbRev: [u8; 4],
+}
+
+impl fmt::Display for SMC_FUSES {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let smc_flavor = match self.Exp1SMCBLDigest {
+            B1SMCBL_HASH_DEVKIT => "Development Mode, SMCFWKey:Devkit".to_string(),
+            B1SMCBL_HASH_RTL_A => "Production Mode, SMCFWKey:rtlA".to_string(),
+            B1SMCBL_HASH_RTL_B => "Production Mode, SMCFWKey:rtlB".to_string(),
+            B1SMCBL_HASH_RTL_C => "Production Mode, SMCFWKey:rtlC".to_string(),
+            B1SMCBL_HASH_RTL_D => "Production Mode, SMCFWKey:rtlD".to_string(),
+            _ => format!("!UNKNOWN! ({})", hex::encode(self.Exp1SMCBLDigest)),
+        };
+
+        writeln!(f, "ECID: {}", hex::encode(self.ECID))?;
+        writeln!(f, "Exp1SMCBLDigest: {smc_flavor}")?;
+        writeln!(f, "RsvdPublic: {}", hex::encode(self.RsvdPublic))?;
+        writeln!(f, "RsvdPrivate: {}", hex::encode(self.RsvdPrivate))?;
+        writeln!(f, "ChipID: {}", hex::encode(self.ChipID))?;
+        writeln!(f, "SB Rev: {}", hex::encode(self.SbRev))?;
+        Ok(())
+    }
+}
 
 /// eMMC SPI Reader - works with any backend
 pub struct EmmcReader<B: SpiBackend> {
-    backend: B,
+    pub backend: B,
     initialized: bool,
 }
 
@@ -21,9 +66,61 @@ impl<B: SpiBackend> EmmcReader<B> {
             initialized: false,
         }
     }
-    
+
+    fn open(&mut self) {}
+    fn close(&mut self) {}
+    fn controller_init(&mut self) {}
+    fn initialize_controller_clock(&mut self) {}
+    fn mmc_init(&mut self) {}
+    fn mmc_enter_standby_mode(&mut self) {}
+    fn mmc_select_card(&mut self) {}
+    fn mmc_command(&mut self) {}
+    fn mmc_get_cid(&mut self) {}
+    fn mmc_read_extended_csd(&mut self) {}
+    fn mmc_set_block_size(&mut self, block_size: u32) {}
+    fn mmc_set_block_count(&mut self, block_count: u32) {}
+    fn mmc_tuning_procedure(&mut self) {}
+    fn mmc_erase_sequence(&mut self) {}
+    fn mmc_partition(&mut self) {}
+    fn mmc_poll_status_bit(&mut self, bit: u32) {}
+    fn mmc_poll_status_bitmask(&mut self, mask: u32) {}
+    fn mmc_register_print(&mut self) {}
+    fn mmc_sanitize(&mut self) {}
+    fn mmc_send_status(&mut self) {}
+    fn clear_interrupt_status(&mut self) {}
+
+    fn set_output_delay(&mut self, delay: u32) {}
+
+    fn decode_response_r1x(&mut self) {}
+    pub fn dump_fuses(&mut self) -> Result<(), Error> {
+        self.backend.initialize()?;
+
+        // Write 0x00000003 to register 0x44
+        self.backend
+            .write_register(Register::InitCommand, 0x00000003)?;
+
+        let mut buf = [0u8; 0x38];
+
+        let mut pos = 0;
+        for reg in Register::XipDataFirst.address()..=Register::XipDataLast.address() {
+            let value = self.backend.read_register(reg)?;
+            buf[pos..pos + size_of::<u32>()].copy_from_slice(&value.to_le_bytes());
+            pos += size_of::<u32>();
+        }
+
+        let (left, fuses) = SMC_FUSES::from_bytes((&mut buf, 0)).unwrap();
+
+        assert!(left.0.is_empty());
+        assert_eq!(left.1, 0);
+
+        println!("{fuses}");
+
+        Ok(())
+    }
+    fn dump_mmc_registers(&mut self) {}
+
     /// Send init sequence
-    /// 
+    ///
     /// To be ran after sanity check
     fn init_sequence(&mut self) -> Result<(), Error> {
         let res = self.read_register(Register::Command)?;
@@ -170,42 +267,44 @@ impl<B: SpiBackend> EmmcReader<B> {
     }
 
     /// Initialize the device
-    /// 
+    ///
     /// This performs:
     /// 1. Hardware initialization (GPIO, SPI, reset)
     /// 2. Sends initialization command
     /// 3. Runs sanity checks
     /// 4. Send init sequence
     pub fn init(&mut self) -> Result<(), Error> {
-        if self.initialized {
+        if self.is_initialized() {
             return Ok(());
         }
-        
+
         // Step 1: Initialize hardware backend
         self.backend.initialize()?;
-        
+
         // Step 2: Send initialization command
         // Write 0x00000003 to register 0x44
-        self.backend.write_register(Register::InitCommand, 0x00000003)?;
-        
+        self.backend
+            .write_register(Register::InitCommand, 0x00000003)?;
+
         // Step 3: Sanity checks
         self.sanity_check()?;
 
         // Step 4: Init sequence
         self.init_sequence()?;
-        
+
         self.initialized = true;
         Ok(())
     }
-    
+
     /// Run sanity checks to verify communication
     fn sanity_check(&mut self) -> Result<(), Error> {
         const TEST_VAL_1: u32 = 0x12345678;
         const TEST_VAL_2: u32 = 0xEDCBA987;
         for test_value in [TEST_VAL_1, TEST_VAL_2, TEST_VAL_1, TEST_VAL_2] {
-            self.backend.write_register(Register::Argument, test_value)?;
+            self.backend
+                .write_register(Register::Argument, test_value)?;
             let response1 = self.backend.read_register(Register::Argument)?;
-            
+
             if response1 != test_value {
                 return Err(Error::SanityCheckFailed {
                     expected: test_value,
@@ -216,37 +315,37 @@ impl<B: SpiBackend> EmmcReader<B> {
 
         Ok(())
     }
-    
+
     /// Write a value to a register
     pub fn write_register(&mut self, register: Register, value: u32) -> Result<(), Error> {
         self.backend.write_register(register, value)
     }
-    
+
     /// Read a value from a register
     pub fn read_register(&mut self, register: Register) -> Result<u32, Error> {
         self.backend.read_register(register)
     }
-    
+
     /// Read a 512-byte block
     pub fn read_data(&mut self, register: Register, buffer: &mut [u8]) -> Result<(), Error> {
         self.backend.read_data(register, buffer)
     }
-    
+
     /// Read the present state register
     pub fn read_present_state(&mut self) -> Result<u32, Error> {
         self.read_register(Register::PresentState)
     }
-    
+
     /// Read the page number / interrupt status register (0x0C)
     pub fn read_interrupt_status(&mut self) -> Result<u32, Error> {
         self.read_register(Register::InterruptStatus)
     }
-    
+
     /// Read the command / status config register (0x0B)
     pub fn read_status_config(&mut self) -> Result<u32, Error> {
         self.read_register(Register::Command)
     }
-    
+
     /// Read a response register
     pub fn read_response(&mut self, index: u8) -> Result<u32, Error> {
         let register = match index {
@@ -256,15 +355,15 @@ impl<B: SpiBackend> EmmcReader<B> {
             3 => Register::Response6And7,
             _ => return Err(Error::RegisterAccessFailed),
         };
-        
+
         self.read_register(register)
     }
-    
+
     /// Check if initialization is complete
     pub fn is_initialized(&self) -> bool {
         self.initialized
     }
-    
+
     pub fn poll_for_value(&mut self, register: Register, value: u32) -> Result<(), Error> {
         const MAX_POLLS: u32 = 10;
         for _ in 0..MAX_POLLS {
@@ -279,7 +378,7 @@ impl<B: SpiBackend> EmmcReader<B> {
     }
 
     /// Read a page from the eMMC chip
-    /// 
+    ///
     /// This implements the full page read sequence based on protocol trace analysis:
     /// 1. Clear/reset status
     /// 2. Set page address
@@ -292,39 +391,35 @@ impl<B: SpiBackend> EmmcReader<B> {
     /// # Arguments
     /// * `page_number` - The page number to read
     /// * `buffer` - Buffer to store the 512-byte page
-    pub fn read_page(
-        &mut self,
-        page_number: u32,
-        buffer: &mut [u8; 512]
-    ) -> Result<(), Error> {
+    pub fn read_page(&mut self, page_number: u32, buffer: &mut [u8; 512]) -> Result<(), Error> {
         // Step 1: Clear/reset status
         self.write_register(Register::InterruptStatus, status::STATUS_CLEAR)?;
 
         // Step 2: Set page address
         self.write_register(Register::Argument, page_number)?;
-        
+
         // Step 3: Set transfer configuration (observed value from protocol trace)
         self.write_register(Register::CommandAndTransferMode, transfer_config::PAGE_READ)?;
-        
+
         // Step 4: Poll for command accepted
         self.poll_for_value(Register::InterruptStatus, status::CMD_ACCEPTED)?;
-        
+
         // Step 5: Poll for data ready and send interrupt acknowledge
         self.poll_for_value(Register::InterruptStatus, status::DATA_READY)?;
         self.write_register(Register::InterruptStatus, status::DATA_READY)?;
-        
+
         // Step 6: Read 512-byte block from data FIFO
         self.read_data(Register::DataFifo, buffer)?;
-        
+
         // Step 7: Read transfer complete status and send interrupt acknowledge
         let _status_value = self.read_register(Register::InterruptStatus)?;
         self.write_register(Register::InterruptStatus, status::TRANSFER_COMPLETE)?;
-        
+
         Ok(())
     }
-    
+
     /// Erase a page from the eMMC chip (STUB)
-    /// 
+    ///
     /// This implements the page erase sequence (to be completed based on protocol analysis):
     /// 1. Clear/reset status
     /// 2. Set page address
@@ -335,46 +430,43 @@ impl<B: SpiBackend> EmmcReader<B> {
     ///
     /// # Arguments
     /// * `page_number` - The page number to erase
-    /// 
+    ///
     /// # Note
     /// This is currently a STUB implementation. The actual protocol sequence needs to be
     /// determined through hardware testing and protocol trace analysis.
-    pub fn erase_page(
-        &mut self,
-        page_number: u32
-    ) -> Result<(), Error> {
+    pub fn erase_page(&mut self, page_number: u32) -> Result<(), Error> {
         // TODO: Implement actual erase sequence once protocol is understood
         // The sequence will likely be similar to read_page but with different
         // transfer configuration and status polling
-        
+
         // Step 1: Clear/reset status
         self.write_register(Register::InterruptStatus, status::STATUS_CLEAR)?;
 
         // Step 2: Set page address to erase
         self.write_register(Register::Argument, page_number)?;
-        
+
         // Step 3: Set erase transfer configuration
         // TODO: Determine the correct transfer configuration value for erase operations
         // This value needs to be captured from actual hardware protocol traces
         const ERASE_TRANSFER_CONFIG: u32 = 0x00000000; // PLACEHOLDER - needs actual value
         self.write_register(Register::CommandAndTransferMode, ERASE_TRANSFER_CONFIG)?;
-        
+
         // Step 4: Poll for command accepted
         self.poll_for_value(Register::InterruptStatus, status::CMD_ACCEPTED)?;
-        
+
         // Step 5: Poll for erase complete
         // TODO: Determine the correct status value for erase completion
         // Erasing typically takes longer than reading
         self.poll_for_value(Register::InterruptStatus, status::TRANSFER_COMPLETE)?;
         self.write_register(Register::InterruptStatus, status::TRANSFER_COMPLETE)?;
-        
+
         println!("WARNING: erase_page is a STUB - protocol sequence not yet validated");
-        
+
         Ok(())
     }
-    
+
     /// Write a page to the eMMC chip (STUB)
-    /// 
+    ///
     /// This implements the page write sequence (to be completed based on protocol analysis):
     /// 1. Clear/reset status
     /// 2. Set page address
@@ -387,15 +479,11 @@ impl<B: SpiBackend> EmmcReader<B> {
     /// # Arguments
     /// * `page_number` - The page number to write
     /// * `buffer` - Buffer containing the 512-byte page to write
-    /// 
+    ///
     /// # Note
     /// This is currently a STUB implementation. The actual protocol sequence needs to be
     /// determined through hardware testing and protocol trace analysis.
-    pub fn write_page(
-        &mut self,
-        page_number: u32,
-        buffer: &[u8; 512]
-    ) -> Result<(), Error> {
+    pub fn write_page(&mut self, page_number: u32, buffer: &[u8; 512]) -> Result<(), Error> {
         // TODO: Implement actual write sequence once protocol is understood
         // The sequence will likely be similar to read_page but with data output
         // instead of data input
@@ -405,32 +493,32 @@ impl<B: SpiBackend> EmmcReader<B> {
 
         // Step 2: Set page address to write
         self.write_register(Register::Argument, page_number)?;
-        
+
         // Step 3: Set write transfer configuration
         // TODO: Determine the correct transfer configuration value for write operations
         // This value needs to be captured from actual hardware protocol traces
         const WRITE_TRANSFER_CONFIG: u32 = 0x00000000; // PLACEHOLDER - needs actual value
         self.write_register(Register::CommandAndTransferMode, WRITE_TRANSFER_CONFIG)?;
-        
+
         // Step 4: Poll for command accepted
         self.poll_for_value(Register::InterruptStatus, status::CMD_ACCEPTED)?;
-        
+
         // Step 5: Write 512-byte block to data FIFO
         // TODO: Implement write_data method in backend trait
         // For now, this is a placeholder that would trigger a compile error
         // if uncommented without implementing the backend method
         // self.backend.write_data(Register::DataFifo, buffer)?;
-        
+
         // Step 6: Poll for write complete
         // TODO: Determine if there's a specific status for write ready/complete
         self.poll_for_value(Register::InterruptStatus, status::TRANSFER_COMPLETE)?;
         self.write_register(Register::InterruptStatus, status::TRANSFER_COMPLETE)?;
-        
+
         println!("WARNING: write_page is a STUB - protocol sequence not yet validated");
-        
+
         // Prevent unused variable warning
         let _ = buffer;
-        
+
         Ok(())
     }
 }
@@ -438,13 +526,13 @@ impl<B: SpiBackend> EmmcReader<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     // Mock backend for testing
     struct MockBackend {
         registers: std::collections::HashMap<u8, u32>,
         initialized: bool,
     }
-    
+
     impl MockBackend {
         fn new() -> Self {
             Self {
@@ -453,40 +541,42 @@ mod tests {
             }
         }
     }
-    
+
     impl SpiBackend for MockBackend {
-        fn write_register(&mut self, register: Register, data: u32) -> Result<(), Error> {
-            self.registers.insert(register.address(), data);
+        fn write_register<T: Into<u8>>(&mut self, register: T, data: u32) -> Result<(), Error> {
+            self.registers.insert(register.into(), data);
             Ok(())
         }
-        
-        fn read_register(&mut self, register: Register) -> Result<u32, Error> {
-            Ok(*self.registers.get(&register.address()).unwrap_or(&0))
+
+        fn read_register<T: Into<u8>>(&mut self, register: T) -> Result<u32, Error> {
+            Ok(*self.registers.get(&register.into()).unwrap_or(&0))
         }
-        
-        fn read_data(&mut self, _register: Register, buffer: &mut [u8]) -> Result<(), Error> {
+
+        fn read_data<T: Into<u8>>(&mut self, _register: T, buffer: &mut [u8]) -> Result<(), Error> {
             buffer.fill(0);
             Ok(())
         }
-        
+
         fn reset(&mut self) -> Result<(), Error> {
             Ok(())
         }
-        
+
         fn initialize(&mut self) -> Result<(), Error> {
             self.initialized = true;
             Ok(())
         }
     }
-    
+
     #[test]
     fn test_read_write() {
         let backend = MockBackend::new();
         let mut reader = EmmcReader::new(backend);
         // reader.init().unwrap();
-        
+
         // Write and read back
-        reader.write_register(Register::Argument, 0xDEADBEEF).unwrap();
+        reader
+            .write_register(Register::Argument, 0xDEADBEEF)
+            .unwrap();
         let value = reader.read_register(Register::Argument).unwrap();
         assert_eq!(value, 0xDEADBEEF);
     }

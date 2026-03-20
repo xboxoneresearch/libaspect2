@@ -15,7 +15,7 @@ impl Command {
     pub fn bits(self) -> u8 {
         self as u8
     }
-    
+
     /// Get number of bits for this command field (always 2)
     pub const fn bit_length() -> u8 {
         2
@@ -31,45 +31,48 @@ pub enum Register {
 
     /// Argument register - buffer/FIFO config
     Argument = 0x02,
-    
+
     /// Command and Transfer Mode register
     CommandAndTransferMode = 0x03,
-    
+
     /// Response/Status register 0 (also used for status polling)
     Response0And1 = 0x04,
     Response2And3 = 0x05,
     Response4And5 = 0x06,
     Response6And7 = 0x07,
-    
+
     /// Data FIFO register (for 512-byte block reads)
     DataFifo = 0x08,
-    
+
     /// Present State register
     PresentState = 0x09,
 
     /// Register 0x0A
     Reg_0A = 0x0A,
-    
+
     /// Command register (for issuing commands to eMMC) - also known as StatusConfig
     Command = 0x0B,
-    
+
     /// InterruptStatus
     InterruptStatus = 0x0C,
-    
+
     /// Configuration register 1
     Config1 = 0x0D,
-    
+
     /// Configuration register 2
     Config2 = 0x0E,
 
     /// Register 0x0F
     Reg_0F = 0x0F,
-    
+
     /// Initialization command register
     InitCommand = 0x44,
 
     /// Register 0x88
     XipOutputDelay = 0x88,
+
+    XipDataFirst = 0xC0,
+    XipDataLast = 0xCD,
 }
 
 impl Into<u8> for Register {
@@ -78,18 +81,17 @@ impl Into<u8> for Register {
     }
 }
 
-
 impl Register {
     /// Get the 8-bit register address
     pub fn address(self) -> u8 {
         self as u8
     }
-    
+
     /// Get number of bits for register address field (always 8)
     pub const fn bit_length() -> u8 {
         8
     }
-    
+
     /// Create from raw address value
     pub fn from_address(addr: u8) -> Option<Self> {
         match addr {
@@ -189,21 +191,20 @@ impl ErrorFlags {
     }
 }
 
-/// Status codes from protocol trace analysis
-/// These are the actual values observed in the hardware protocol
+/// Status codes
 pub mod status {
     /// Data ready status - indicates 512 bytes are ready to read from DataFifo
     pub const DATA_READY: u32 = 0x00000020;
-    
+
     /// Command accepted status - indicates command was accepted and processing started
     pub const CMD_ACCEPTED: u32 = 0x00000021;
-    
+
     /// Transfer complete status - indicates block transfer is finished
     pub const TRANSFER_COMPLETE: u32 = 0x00000002;
-    
+
     /// Command/Busy status - written to initiate operations
     pub const CMD_BUSY: u32 = 0x00000001;
-    
+
     /// Status clear/reset value - written to clear status after acknowledgement
     pub const STATUS_CLEAR: u32 = 0xFFFFFFFF;
 }
@@ -211,7 +212,6 @@ pub mod status {
 /// Transfer configuration values from protocol trace
 pub mod transfer_config {
     /// Standard transfer configuration for 512-byte page reads
-    /// This value was observed in actual protocol traces
     pub const PAGE_READ: u32 = 0x113A0010;
 }
 

@@ -4,15 +4,12 @@
 //! and optional GPIO controls for reset / enable.
 
 use core::time::Duration;
-use embedded_hal::eh0::{
-    delay::DelayNs,
-    digital::OutputPin,
-    spi::SpiDevice,
-};
+use embedded_hal::eh0::{delay::DelayNs, digital::OutputPin, spi::SpiDevice};
 
+use super::{GpioControl, SpiBackend};
 use crate::error::Error;
-use crate::protocol::{Command, Register};
-use super::{SpiBackend, GpioControl};
+use crate::spi::protocol::commands::Command;
+use crate::spi::protocol::commands::Register;
 
 /// embedded-hal SPI Backend
 ///
@@ -34,12 +31,7 @@ where
     D: DelayNs,
 {
     /// Create a new embedded-hal SPI backend
-    pub fn new(
-        spi: SPI,
-        reset: Option<RST>,
-        enable: Option<EN>,
-        delay: D,
-    ) -> Self {
+    pub fn new(spi: SPI, reset: Option<RST>, enable: Option<EN>, delay: D) -> Self {
         Self {
             spi,
             reset,
@@ -114,9 +106,7 @@ where
         // Data (little-endian)
         frame[2..6].copy_from_slice(&data.to_le_bytes());
 
-        self.spi
-            .write(&frame)
-            .map_err(|_| Error::Spi)?;
+        self.spi.write(&frame).map_err(|_| Error::Spi)?;
 
         Ok(())
     }
@@ -129,17 +119,13 @@ where
         tx[0] = Command::Read.bits();
         tx[1] = register.address();
 
-        self.spi
-            .write(&tx)
-            .map_err(|_| Error::Spi)?;
+        self.spi.write(&tx).map_err(|_| Error::Spi)?;
 
         // Small wait (matches FTDI dummy clocks)
         self.delay.delay_ns(1_000);
 
         // Read response
-        self.spi
-            .read(&mut rx)
-            .map_err(|_| Error::Spi)?;
+        self.spi.read(&mut rx).map_err(|_| Error::Spi)?;
 
         Ok(u32::from_le_bytes(rx))
     }
@@ -151,16 +137,12 @@ where
         tx[0] = Command::Read.bits();
         tx[1] = register.address();
 
-        self.spi
-            .write(&tx)
-            .map_err(|_| Error::Spi)?;
+        self.spi.write(&tx).map_err(|_| Error::Spi)?;
 
         // Wait for device to prepare data
         self.delay.delay_ns(1_000);
 
-        self.spi
-            .read(buffer)
-            .map_err(|_| Error::Spi)?;
+        self.spi.read(buffer).map_err(|_| Error::Spi)?;
 
         Ok(())
     }

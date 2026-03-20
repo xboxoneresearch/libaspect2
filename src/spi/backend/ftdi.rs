@@ -1,14 +1,13 @@
-/// FTDI backend implementation using libftd2xx
-/// 
-/// This backend provides direct FTDI MPSSE access for maximum performance.
-
-use std::time::Duration;
-use libftd2xx::{Ft4232h, FtdiCommon, FtdiMpsse, MpsseCmdBuilder, MpsseCmdExecutor};
 use bitflags::bitflags;
+use libftd2xx::{Ft4232h, FtdiCommon, FtdiMpsse, MpsseCmdBuilder, MpsseCmdExecutor};
+/// FTDI backend implementation using libftd2xx
+///
+/// This backend provides direct FTDI MPSSE access for maximum performance.
+use std::time::Duration;
 
+use super::{GpioControl, SpiBackend};
 use crate::error::Error;
 use crate::spi::protocol::commands::{Command, Register};
-use super::{SpiBackend, GpioControl};
 
 /*
 Pin assignments on FTDI FT4232H:
@@ -26,7 +25,7 @@ bitflags! {
         const CLK =        1;          // Mask 0x01, AD0
         const MOSI =       1 << 1;     // Mask 0x02, AD1
         const MISO =       1 << 2;     // Mask 0x04, AD2
-        const SS_N =       1 << 3;     // Mask 0x08, AD3 
+        const SS_N =       1 << 3;     // Mask 0x08, AD3
         const SWO_DBG_EN = 1 << 4;     // Mask 0x10, AD4
         const EN_N =       1 << 5;     // Mask 0x20, AD5
         const UNUSED =     1 << 6;     // Mask 0x40, AD6
@@ -44,33 +43,39 @@ impl FtdiBackend {
     pub fn new(dev: Ft4232h) -> Self {
         Self { dev }
     }
-    
+
     /// Open FTDI device by description
     pub fn open(description: &str) -> Result<Self, Error> {
         let dev = Ft4232h::with_description(description)?;
         Ok(Self::new(dev))
     }
-    
+
     /// Get pin direction configuration (which pins are outputs)
     fn pin_directions() -> SpiPin {
         SpiPin::CLK | SpiPin::MOSI | SpiPin::SS_N | SpiPin::EN_N | SpiPin::RST_N
     }
-    
+
     /// Read current GPIO state
     fn get_data_bits(&mut self) -> Result<SpiPin, Error> {
         let bits = self.dev.gpio_lower()?;
         SpiPin::from_bits(bits).ok_or(Error::InvalidGpioState)
     }
-    
+
     /// Set GPIO pins to specific absolute state
     fn set_data_bits_absolute(&mut self, state: SpiPin) -> Result<(), Error> {
-        self.dev.set_gpio_lower(state.bits(), Self::pin_directions().bits())?;
-        self.dev.set_gpio_upper(SpiPin::empty().bits(), SpiPin::empty().bits())?;
+        self.dev
+            .set_gpio_lower(state.bits(), Self::pin_directions().bits())?;
+        self.dev
+            .set_gpio_upper(SpiPin::empty().bits(), SpiPin::empty().bits())?;
         Ok(())
     }
-    
+
     /// Helper to set/clear specific bits
-    fn set_data_bits_single(current_bits: SpiPin, target_bits: SpiPin, high: bool) -> Result<SpiPin, Error> {
+    fn set_data_bits_single(
+        current_bits: SpiPin,
+        target_bits: SpiPin,
+        high: bool,
+    ) -> Result<SpiPin, Error> {
         if target_bits.bits().count_ones() != 1 {
             return Err(Error::InvalidPinMask);
         }
@@ -83,12 +88,13 @@ impl FtdiBackend {
 
         Ok(bits_set)
     }
-    
+
     /// Set a single pin high or low
-    fn set_single_pin(&mut self, target_pin: SpiPin, high: bool) -> Result<(), Error> {
+    pub fn set_single_pin(&mut self, target_pin: SpiPin, high: bool) -> Result<(), Error> {
         let current = self.get_data_bits()?;
         let updated = Self::set_data_bits_single(current, target_pin, high)?;
-        self.dev.set_gpio_lower(updated.bits(), Self::pin_directions().bits())?;
+        self.dev
+            .set_gpio_lower(updated.bits(), Self::pin_directions().bits())?;
         Ok(())
     }
 }
@@ -98,12 +104,12 @@ impl GpioControl for FtdiBackend {
         // SS_N is active low, so asserted=true means pin=low
         self.set_single_pin(SpiPin::SS_N, !asserted)
     }
-    
+
     fn set_reset(&mut self, asserted: bool) -> Result<(), Error> {
         // RST_N is active low, so asserted=true means pin=low
         self.set_single_pin(SpiPin::RST_N, !asserted)
     }
-    
+
     fn set_enable(&mut self, enabled: bool) -> Result<(), Error> {
         // EN_N is active low, so enabled=true means pin=low
         self.set_single_pin(SpiPin::EN_N, !enabled)
@@ -111,16 +117,24 @@ impl GpioControl for FtdiBackend {
 }
 
 impl SpiBackend for FtdiBackend {
-    fn write_register(&mut self, register: Register, data: u32) -> Result<(), Error> {
+    fn write_register<T: Into<u8>>(&mut self, register: T, data: u32) -> Result<(), Error> {
         let bits = self.get_data_bits()?;
-        
+
         let builder = MpsseCmdBuilder::new()
             // Assert ChipSelect
             .set_gpio_lower((bits & !SpiPin::SS_N).bits(), Self::pin_directions().bits())
             // Send command bits (2 bits: WRITE = 0x2)
-            .clock_bits_out(libftd2xx::ClockBitsOut::LsbNeg, Command::Write.bits(), Command::bit_length())
+            .clock_bits_out(
+                libftd2xx::ClockBitsOut::LsbNeg,
+                Command::Write.bits(),
+                Command::bit_length(),
+            )
             // Send register address (8 bits)
-            .clock_bits_out(libftd2xx::ClockBitsOut::LsbNeg, register.address(), Register::bit_length())
+            .clock_bits_out(
+                libftd2xx::ClockBitsOut::LsbNeg,
+                register.into(),
+                Register::bit_length(),
+            )
             // Send data (4 bytes, little-endian)
             .clock_data_out(libftd2xx::ClockDataOut::LsbNeg, &data.to_le_bytes())
             // Release ChipSelect
@@ -129,107 +143,126 @@ impl SpiBackend for FtdiBackend {
         self.dev.send(builder.as_slice())?;
         Ok(())
     }
-    
-    fn read_register(&mut self, register: Register) -> Result<u32, Error> {
+
+    fn read_register<T: Into<u8>>(&mut self, register: T) -> Result<u32, Error> {
         let bits = self.get_data_bits()?;
-        
+
         let builder = MpsseCmdBuilder::new()
             // Assert ChipSelect
             .set_gpio_lower((bits & !SpiPin::SS_N).bits(), Self::pin_directions().bits())
             // Send command bits (2 bits: READ = 0x1)
-            .clock_bits_out(libftd2xx::ClockBitsOut::LsbNeg, Command::Read.bits(), Command::bit_length())
+            .clock_bits_out(
+                libftd2xx::ClockBitsOut::LsbNeg,
+                Command::Read.bits(),
+                Command::bit_length(),
+            )
             // Send register address (8 bits)
-            .clock_bits_out(libftd2xx::ClockBitsOut::LsbNeg, register.address(), Register::bit_length());
-        
+            .clock_bits_out(
+                libftd2xx::ClockBitsOut::LsbNeg,
+                register.into(),
+                Register::bit_length(),
+            );
+
         let builder2 = MpsseCmdBuilder::new()
             // Read 4 bytes of data
             .clock_data_in(libftd2xx::ClockDataIn::LsbPos, 4)
             // Release ChipSelect
             .set_gpio_lower((bits | SpiPin::SS_N).bits(), Self::pin_directions().bits())
             .send_immediate();
-        
+
         let mut final_cmd = vec![];
         final_cmd.extend_from_slice(builder.as_slice());
         // Clock 8 cycles (wait time for device to prepare response)
         final_cmd.extend_from_slice(&[0x8F, 0x01, 0x00]);
         final_cmd.extend_from_slice(builder2.as_slice());
-        
+
         self.dev.send(final_cmd.as_slice())?;
-        
+
         let mut recv_buffer = [0u8; 4];
         self.dev.recv(&mut recv_buffer)?;
-        
+
         Ok(u32::from_le_bytes(recv_buffer))
     }
-    
-    fn read_data(&mut self, register: Register, buffer: &mut [u8]) -> Result<(), Error> {
+
+    fn read_data<T: Into<u8>>(&mut self, register: T, buffer: &mut [u8]) -> Result<(), Error> {
         let bits = self.get_data_bits()?;
-        
+
         let builder = MpsseCmdBuilder::new()
             // Assert ChipSelect
             .set_gpio_lower((bits & !SpiPin::SS_N).bits(), Self::pin_directions().bits())
             // Send command bits (2 bits: READ = 0x1)
-            .clock_bits_out(libftd2xx::ClockBitsOut::LsbNeg, Command::Read.bits(), Command::bit_length())
+            .clock_bits_out(
+                libftd2xx::ClockBitsOut::LsbNeg,
+                Command::Read.bits(),
+                Command::bit_length(),
+            )
             // Send register address (8 bits)
-            .clock_bits_out(libftd2xx::ClockBitsOut::LsbNeg, register.address(), Register::bit_length());
-        
+            .clock_bits_out(
+                libftd2xx::ClockBitsOut::LsbNeg,
+                register.into(),
+                Register::bit_length(),
+            );
+
         let builder2 = MpsseCmdBuilder::new()
             // Read 512 bytes of data
             .clock_data_in(libftd2xx::ClockDataIn::LsbPos, buffer.len())
             // Release ChipSelect
             .set_gpio_lower((bits | SpiPin::SS_N).bits(), Self::pin_directions().bits())
             .send_immediate();
-        
+
         let mut final_cmd = vec![];
         final_cmd.extend_from_slice(builder.as_slice());
         // Clock 8 cycles (wait time)
         final_cmd.extend_from_slice(&[0x8F, 0x01, 0x00]);
         final_cmd.extend_from_slice(builder2.as_slice());
-        
+
         self.dev.send(final_cmd.as_slice())?;
         self.dev.recv(buffer)?;
-        
+
         Ok(())
     }
-    
+
     fn reset(&mut self) -> Result<(), Error> {
         // Assert reset (active low)
         self.set_reset(true)?;
-        
+
         // Hold for 100ms
         std::thread::sleep(Duration::from_millis(100));
-        
+
         // Release reset
         self.set_reset(false)?;
-        
+
         Ok(())
     }
-    
+
     fn initialize(&mut self) -> Result<(), Error> {
         // Set MPSSE mode
         self.dev.set_bit_mode(0x0, libftd2xx::BitMode::Mpsse)?;
-        
+
         // Set latency timer
         self.dev.set_latency_timer(Duration::from_millis(2))?;
-        
+
+        self.dev.set_usb_parameters(64)?;
+
         // Set initial GPIO state: SS_N=HIGH, EN_N=HIGH, RST_N=HIGH
         self.set_data_bits_absolute(SpiPin::SS_N | SpiPin::EN_N | SpiPin::RST_N)?;
-        
+
         // Enable SPI level shifter (EN_N is active low)
         self.set_enable(true)?;
-        
+
         // Assert chip select briefly
         self.set_chip_select(true)?;
-        
+
         // Perform reset
         self.reset()?;
-        
+
         // Release chip select
         self.set_chip_select(false)?;
-        
+
         // Setup clock frequency (149 kHz)
+        // TODO: After frequency training, it should get increased automatically
         self.dev.set_clock(149)?;
-        
+
         Ok(())
     }
 }
@@ -241,7 +274,10 @@ mod tests {
     #[test]
     fn test_pin_flags() {
         assert_eq!(0xA8, (SpiPin::SS_N | SpiPin::EN_N | SpiPin::RST_N).bits());
-        assert_eq!(0xAB, (SpiPin::CLK | SpiPin::MOSI | SpiPin::SS_N | SpiPin::EN_N | SpiPin::RST_N).bits());
+        assert_eq!(
+            0xAB,
+            (SpiPin::CLK | SpiPin::MOSI | SpiPin::SS_N | SpiPin::EN_N | SpiPin::RST_N).bits()
+        );
     }
 
     #[test]

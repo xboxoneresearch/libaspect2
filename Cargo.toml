@@ -13,10 +13,12 @@ members = [
 embedded-hal = "1.0.0"
 bitflags = "2.6.0"
 thiserror = "2.0.3"
+deku = "0.20.3"
+hex = "0.4.3"
+hex-literal = "1.1.0"
 
 [dependencies.libftd2xx]
 version = "0.33.1"
 # statically link the vendor library, defaults to dynamic if not set
 # this will make things "just work" on Linux and Windows
 features = ["static"]
-
