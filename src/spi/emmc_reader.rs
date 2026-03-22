@@ -185,13 +185,12 @@ impl<B: SpiBackend, D: DelayTrait> EmmcReader<B, D> {
                 //println!("Current val: {res:#08X}");
             }
 
-            if let Some(val) = current_val {
-                if val != res {
+            if let Some(val) = current_val
+                && val != res {
                     assert_eq!(0xC0FF8080, res);
                     //println!("Val changed, prev: {val:#08X}, now: {res:#08X}");
                     break;
                 }
-            }
 
             self.delay.delay_us(100);
         }
@@ -391,7 +390,7 @@ impl<B: SpiBackend, D: DelayTrait> EmmcReader<B, D> {
             self.delay.delay_ms(10);
         }
 
-        return Err(Error::Timeout);
+        Err(Error::Timeout)
     }
 
     /// Read a page from the eMMC chip

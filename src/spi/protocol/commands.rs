@@ -76,9 +76,9 @@ pub enum Register {
     XipDataLast = 0xCD,
 }
 
-impl Into<u8> for Register {
-    fn into(self) -> u8 {
-        self as u8
+impl From<Register> for u8 {
+    fn from(val: Register) -> Self {
+        val as u8
     }
 }
 

@@ -1,16 +1,16 @@
+use anyhow::{Result, anyhow};
+use binrw::{
+    BinRead, // trait for reading
+    binrw,   // #[binrw] attribute
+};
+use clap::{Parser, Subcommand, ValueEnum};
+use indicatif::{ProgressBar, ProgressStyle};
+use libaspect2::{Ft4232h, I2cFtBitbang};
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{Cursor, Read, Write};
-use std::time::Duration;
 use std::path::PathBuf;
-use anyhow::{anyhow, Result};
-use binrw::{
-    binrw,    // #[binrw] attribute
-    BinRead,  // trait for reading
-};
-use clap::{Parser, Subcommand, ValueEnum};
-use indicatif::{ProgressStyle, ProgressBar};
-use libaspect2::{I2cFtBitbang, Ft4232h};
+use std::time::Duration;
 use stm32_bootloader_client::{ProtocolVersion, Stm32, Stm32i2c};
 
 /*
@@ -83,7 +83,11 @@ impl Tombstone {
 
 impl Display for Tombstone {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Version={}.{}, Size={:#04X}, CRC32={:#04X}", self.ver_major, self.ver_minor, self.size, self.crc)
+        write!(
+            f,
+            "Version={}.{}, Size={:#04X}, CRC32={:#04X}",
+            self.ver_major, self.ver_minor, self.size, self.crc
+        )
     }
 }
 
@@ -100,7 +104,6 @@ macro_rules! pagecount_for_size {
         (($sz + PAGE_SZ - 1) / PAGE_SZ)
     };
 }
-
 
 #[derive(Parser)]
 #[command(name = "aspect2-stm32-updater", version = "1.0")]
@@ -129,7 +132,7 @@ enum Command {
     /// Retrieve metadata of currently flashed firmware components
     Info,
     /// Wipe the whole flash memory
-    Wipe
+    Wipe,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -154,10 +157,13 @@ fn main() -> Result<()> {
 
     let mut config = stm32_bootloader_client::Config::i2c_address(STM32_BOOTLOADER_I2C_ADDR);
     config.mass_erase_max_ns = Duration::from_secs(1).as_nanos() as u64;
-    let mut stm32 = Stm32::new(Stm32i2c::new(&mut i2c_if, config), ProtocolVersion::Version1_1);
+    let mut stm32 = Stm32::new(
+        Stm32i2c::new(&mut i2c_if, config),
+        ProtocolVersion::Version1_1,
+    );
 
     match args.command {
-        Command::Read { section, binary} => {
+        Command::Read { section, binary } => {
             let (offset, size) = match section {
                 Section::Preloader => (PRELOADER_OFFSET, SECTION_PRELOADER_SZ),
                 Section::UserApp => (TOMBSTONE_UAPP_OFFSET, SECTION_USERAPP_SZ),
@@ -192,7 +198,7 @@ fn main() -> Result<()> {
             let mut f = File::open(binary)?;
             f.write_all(&filebuf)?;
             println!("[*] Done");
-        },
+        }
         Command::Flash { binary, section } => {
             if !binary.exists() {
                 return Err(anyhow!("Binary file does not exist"));
@@ -201,7 +207,8 @@ fn main() -> Result<()> {
             let mut file = std::fs::File::open(&binary)?;
             let mut filebuf = vec![];
             file.read_to_end(&mut filebuf)?;
-            println!("* Using File={:?}, Size={} bytes",
+            println!(
+                "* Using File={:?}, Size={} bytes",
                 binary.file_name().ok_or(anyhow!("Reading filename failed")),
                 filebuf.len()
             );
@@ -216,11 +223,20 @@ fn main() -> Result<()> {
 
             let start_page = page_for_offset!(offset);
             let page_count = pagecount_for_size!(size);
-            println!("[*] About to write offset {:#08X} - {:#08X} ({:#X} bytes)", offset, offset + size, size);
+            println!(
+                "[*] About to write offset {:#08X} - {:#08X} ({:#X} bytes)",
+                offset,
+                offset + size,
+                size
+            );
             println!("[*] Start page: {start_page}, count: {page_count}");
 
-            if filebuf.len() != size as usize {
-                return Err(anyhow!("Expected firmware size {:#08X}, got: {:#08X}", size, filebuf.len()));
+            if filebuf.len() != size {
+                return Err(anyhow!(
+                    "Expected firmware size {:#08X}, got: {:#08X}",
+                    size,
+                    filebuf.len()
+                ));
             }
 
             let chip_id = stm32.get_chip_id()?;
@@ -238,7 +254,7 @@ fn main() -> Result<()> {
 
             println!("[+] Writing firmware...");
             progress.set_message("Writing");
-            stm32.write_bulk(offset as u32, &filebuf, |p|{
+            stm32.write_bulk(offset as u32, &filebuf, |p| {
                 progress.set_position(p.bytes_complete as u64);
             })?;
 
@@ -252,22 +268,28 @@ fn main() -> Result<()> {
                 stm32.erase_flash(&mut delay)?;
             }
             println!("[*] Done");
-        },
+        }
         Command::Wipe => {
             println!("[!] Wiping flash..");
             stm32.erase_flash(&mut delay)?;
             println!("[*] Done");
-        },
+        }
         Command::Info => {
             let mut out = [0; TOMBSTONE_SZ];
 
             for (ts_offset, magic, data_offset) in [
-                (TOMBSTONE_IAPL_OFFSET, TOMBSTONE_IAPL_MAGIC, PRELOADER_OFFSET), (TOMBSTONE_UAPP_OFFSET, TOMBSTONE_UAPP_MAGIC, USERAPP_OFFSET)
+                (
+                    TOMBSTONE_IAPL_OFFSET,
+                    TOMBSTONE_IAPL_MAGIC,
+                    PRELOADER_OFFSET,
+                ),
+                (TOMBSTONE_UAPP_OFFSET, TOMBSTONE_UAPP_MAGIC, USERAPP_OFFSET),
             ] {
                 stm32.read_memory(ts_offset as u32, &mut out)?;
                 let header = to_tombstone_struct(&out);
                 if &header.magic == magic {
-                    let hash_result = stm32.get_memory_checksum(data_offset as u32, header.size as u32);
+                    let hash_result =
+                        stm32.get_memory_checksum(data_offset as u32, header.size as u32);
 
                     let hash_valid = match hash_result {
                         Ok(chksum) => chksum == header.crc,
@@ -281,7 +303,7 @@ fn main() -> Result<()> {
                     eprintln!("No firmware / tombstone found @ {ts_offset:#08X}");
                 }
             }
-        },
+        }
     }
 
     Ok(())
@@ -314,8 +336,9 @@ mod tests {
     #[test]
     fn test_ts_struct_from_bytes() {
         let data: [u8; TOMBSTONE_SZ] = [
-            0x49, 0x41, 0x50, 0x4C, 0x01, 0x00, 0x02, 0x00, 0x0B, 0xB0, 0x67, 0x45, 0x23, 0x01, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x49, 0x41, 0x50, 0x4C, 0x01, 0x00, 0x02, 0x00, 0x0B, 0xB0, 0x67, 0x45, 0x23, 0x01,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
         ];
 
         assert_eq!(size_of::<Tombstone>(), TOMBSTONE_SZ);

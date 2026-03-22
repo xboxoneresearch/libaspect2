@@ -19,9 +19,9 @@ pub enum Isd9160Commands {
     CMD_RESET = 0x4A,
 }
 
-impl Into<u8> for Isd9160Commands {
-    fn into(self) -> u8 {
-        self as u8
+impl From<Isd9160Commands> for u8 {
+    fn from(val: Isd9160Commands) -> Self {
+        val as u8
     }
 }
 
@@ -57,9 +57,9 @@ pub enum Isd9160Registers {
     REG_ADDRMSK3 = 0x30,
 }
 
-impl Into<u8> for Isd9160Registers {
-    fn into(self) -> u8 {
-        self as u8
+impl From<Isd9160Registers> for u8 {
+    fn from(val: Isd9160Registers) -> Self {
+        val as u8
     }
 }
 
@@ -80,9 +80,9 @@ pub enum Isd9160Sounds {
     PLOPP_LOUDER = 0x08,
 }
 
-impl Into<u8> for Isd9160Sounds {
-    fn into(self) -> u8 {
-        self as u8
+impl From<Isd9160Sounds> for u8 {
+    fn from(val: Isd9160Sounds) -> Self {
+        val as u8
     }
 }
 
@@ -102,7 +102,7 @@ where
 
     pub fn new(device: T) -> Self {
         Self {
-            device: device,
+            device,
             position: 0,
             write_reg_buf: [0u8; _],
         }
@@ -133,7 +133,7 @@ where
     pub fn write_register<U: Into<u8>>(&mut self, register: U, data: &[u8]) {
         self.write_reg_buf[0] = Isd9160Commands::CMD_REG_WRITE.into();
         self.write_reg_buf[1] = register.into();
-        self.write_reg_buf[2..].copy_from_slice(&data[..]);
+        self.write_reg_buf[2..].copy_from_slice(data);
         self.device
             .write(Self::I2C_ADDR, &self.write_reg_buf)
             .expect("Failed to write register");
