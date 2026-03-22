@@ -1,14 +1,15 @@
 use clap::{Parser, Subcommand};
-use indicatif::{ProgressIterator, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
+use libaspect2::prelude::*;
 use libaspect2::spi::backend::SpiBackend;
 use libaspect2::spi::backend::ftdi::FtdiBackend;
 use libaspect2::spi::emmc_reader::EmmcReader;
-use libaspect2::DelayTrait;
 use std::fs::File;
 use std::io::Write;
-use std::time::Duration;
 
 const MAX_NAND_PAGES: u32 = 0x9E0000;
+const BLOCK_SIZE: usize = 512;
+const CHUNK_PAGES: u32 = 128; // read 128 pages (64 KB) per CMD18
 
 #[derive(Subcommand, Clone, PartialEq, Debug)]
 enum Command {
@@ -25,24 +26,16 @@ struct Args {
     op: Command,
 }
 
-struct Delay;
-
-impl DelayTrait for Delay {
-    fn delay_ns(&mut self, ns: u32) {
-        std::thread::sleep(Duration::from_nanos(ns as u64))
-    }
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("eMMC SPI Reader");
 
     let args = Args::parse();
 
     // Open FTDI device
-    let backend = FtdiBackend::open("Facet2 FabA+ A")?;
+    let backend = FtdiBackend::open("Facet2 FabA+ A").expect("Failed to open FTDI backend");
 
     // Create reader with FTDI backend
-    let mut reader = EmmcReader::new(backend, Delay);
+    let mut reader = EmmcReader::new(backend, StdClock);
 
     match args.op {
         Command::Reset => {
@@ -68,23 +61,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             println!("\nDevice initialized successfully!");
 
+            let total_bytes = MAX_NAND_PAGES as u64 * BLOCK_SIZE as u64;
             let mut file = File::create("dump.bin")?;
+            let mut chunk_buf = vec![0u8; CHUNK_PAGES as usize * BLOCK_SIZE];
 
-            let mut buf = [0u8; 512];
             // Read eMMC pages
-            println!("Reading eMMC...");
-            // Chunking?
-            for page_num in (0..MAX_NAND_PAGES)
-            .progress()
-            .with_style(
-                ProgressStyle::default_spinner()
-                .template("[{elapsed_precise}, eta:{eta}] {bar:40.cyan/blue} {bytes} / {total_bytes} ({binary_bytes_per_sec})")
-                .unwrap()
-            )
-            {
-                reader.read_page(page_num, &mut buf)?;
-                file.write_all(&buf)?;
+            println!(
+                "Reading eMMC ({} pages, {:.2} GiB)...",
+                MAX_NAND_PAGES,
+                total_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+            );
+
+            let pb = ProgressBar::new(total_bytes);
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template("[{elapsed_precise}, eta:{eta}] {bar:40.cyan/blue} {bytes} / {total_bytes} ({binary_bytes_per_sec})")
+                    .unwrap()
+            );
+
+            let mut page = 0u32;
+            while page < MAX_NAND_PAGES {
+                let remaining = MAX_NAND_PAGES - page;
+                let count = remaining.min(CHUNK_PAGES);
+                let byte_count = count as usize * BLOCK_SIZE;
+
+                reader.read_pages(page, &mut chunk_buf[..byte_count], count)?;
+                file.write_all(&chunk_buf[..byte_count])?;
+
+                pb.inc(byte_count as u64);
+                page += count;
             }
+
+            pb.finish_with_message("done");
         }
     }
 

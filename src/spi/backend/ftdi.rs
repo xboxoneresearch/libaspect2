@@ -1,5 +1,5 @@
 use bitflags::bitflags;
-use libftd2xx::{Ft4232h, FtdiCommon, FtdiMpsse, MpsseCmdBuilder, MpsseCmdExecutor};
+use libftd2xx::{Ft2232h, FtdiCommon, FtdiMpsse, MpsseCmdBuilder, MpsseCmdExecutor};
 /// FTDI backend implementation using libftd2xx
 ///
 /// This backend provides direct FTDI MPSSE access for maximum performance.
@@ -35,18 +35,23 @@ bitflags! {
 
 /// FTDI SPI Backend
 pub struct FtdiBackend {
-    dev: Ft4232h,
+    dev: Ft2232h,
+    /// Cached GPIO pin state — avoids a USB round-trip per register access.
+    cached_pins: SpiPin,
 }
 
 impl FtdiBackend {
     /// Create a new FTDI backend with the specified device
-    pub fn new(dev: Ft4232h) -> Self {
-        Self { dev }
+    pub fn new(dev: Ft2232h) -> Self {
+        Self {
+            dev,
+            cached_pins: SpiPin::SS_N | SpiPin::EN_N | SpiPin::RST_N,
+        }
     }
 
     /// Open FTDI device by description
     pub fn open(description: &str) -> Result<Self, Error> {
-        let dev = Ft4232h::with_description(description)?;
+        let dev = Ft2232h::with_description(description)?;
         Ok(Self::new(dev))
     }
 
@@ -55,10 +60,9 @@ impl FtdiBackend {
         SpiPin::CLK | SpiPin::MOSI | SpiPin::SS_N | SpiPin::EN_N | SpiPin::RST_N
     }
 
-    /// Read current GPIO state
-    fn get_data_bits(&mut self) -> Result<SpiPin, Error> {
-        let bits = self.dev.gpio_lower()?;
-        SpiPin::from_bits(bits).ok_or(Error::InvalidGpioState)
+    /// Return cached GPIO state (no USB round-trip).
+    fn get_data_bits(&self) -> SpiPin {
+        self.cached_pins
     }
 
     /// Set GPIO pins to specific absolute state
@@ -67,6 +71,7 @@ impl FtdiBackend {
             .set_gpio_lower(state.bits(), Self::pin_directions().bits())?;
         self.dev
             .set_gpio_upper(SpiPin::empty().bits(), SpiPin::empty().bits())?;
+        self.cached_pins = state;
         Ok(())
     }
 
@@ -91,10 +96,11 @@ impl FtdiBackend {
 
     /// Set a single pin high or low
     pub fn set_single_pin(&mut self, target_pin: SpiPin, high: bool) -> Result<(), Error> {
-        let current = self.get_data_bits()?;
+        let current = self.get_data_bits();
         let updated = Self::set_data_bits_single(current, target_pin, high)?;
         self.dev
             .set_gpio_lower(updated.bits(), Self::pin_directions().bits())?;
+        self.cached_pins = updated;
         Ok(())
     }
 }
@@ -118,7 +124,7 @@ impl GpioControl for FtdiBackend {
 
 impl SpiBackend for FtdiBackend {
     fn write_register<T: Into<u8>>(&mut self, register: T, data: u32) -> Result<(), Error> {
-        let bits = self.get_data_bits()?;
+        let bits = self.get_data_bits();
 
         let builder = MpsseCmdBuilder::new()
             // Assert ChipSelect
@@ -145,7 +151,7 @@ impl SpiBackend for FtdiBackend {
     }
 
     fn read_register<T: Into<u8>>(&mut self, register: T) -> Result<u32, Error> {
-        let bits = self.get_data_bits()?;
+        let bits = self.get_data_bits();
 
         let builder = MpsseCmdBuilder::new()
             // Assert ChipSelect
@@ -185,7 +191,7 @@ impl SpiBackend for FtdiBackend {
     }
 
     fn read_data<T: Into<u8>>(&mut self, register: T, buffer: &mut [u8]) -> Result<(), Error> {
-        let bits = self.get_data_bits()?;
+        let bits = self.get_data_bits();
 
         let builder = MpsseCmdBuilder::new()
             // Assert ChipSelect
@@ -222,6 +228,21 @@ impl SpiBackend for FtdiBackend {
         Ok(())
     }
 
+    fn write_data<T: Into<u8> + Copy>(&mut self, register: T, buffer: &[u8]) -> Result<(), Error> {
+        // Write in 4-byte words via individual register writes
+        for chunk in buffer.chunks(4) {
+            let mut word = [0u8; 4];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.write_register(register, u32::from_le_bytes(word))?;
+        }
+        Ok(())
+    }
+
+    fn set_spi_clock(&mut self, freq_khz: u32) -> Result<(), Error> {
+        self.dev.set_clock(freq_khz * 1000)?;
+        Ok(())
+    }
+
     fn reset(&mut self) -> Result<(), Error> {
         // Assert reset (active low)
         self.set_reset(true)?;
@@ -239,10 +260,10 @@ impl SpiBackend for FtdiBackend {
         // Set MPSSE mode
         self.dev.set_bit_mode(0x0, libftd2xx::BitMode::Mpsse)?;
 
-        // Set latency timer
-        self.dev.set_latency_timer(Duration::from_millis(2))?;
+        // Set latency timer (lower = faster USB turnaround)
+        self.dev.set_latency_timer(Duration::from_millis(1))?;
 
-        self.dev.set_usb_parameters(64)?;
+        self.dev.set_usb_parameters(65536)?;
 
         // Set initial GPIO state: SS_N=HIGH, EN_N=HIGH, RST_N=HIGH
         self.set_data_bits_absolute(SpiPin::SS_N | SpiPin::EN_N | SpiPin::RST_N)?;
@@ -259,9 +280,9 @@ impl SpiBackend for FtdiBackend {
         // Release chip select
         self.set_chip_select(false)?;
 
-        // Setup clock frequency (149 kHz)
-        // TODO: After frequency training, it should get increased automatically
-        self.dev.set_clock(149)?;
+        // Setup clock frequency — conservative 5 kHz for init;
+        // ramped up after the SPI-SDHCI bridge is verified.
+        self.dev.set_clock(5_000)?;
 
         Ok(())
     }

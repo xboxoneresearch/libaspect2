@@ -1,15 +1,15 @@
 use super::protocol::commands::Register;
 use super::protocol::transaction::TransactionType;
+use crate::error::Error;
 /// Backend abstraction module - hardware-specific implementations
 ///
 /// This module defines a common trait for SPI backends and provides
 /// implementations for both FTDI and embedded-hal.
 use crate::prelude::*;
-use crate::error::Error;
 
+pub mod eh;
 #[cfg(feature = "ftdi")]
 pub mod ftdi;
-pub mod eh;
 
 /// Common SPI backend trait
 ///
@@ -38,6 +38,27 @@ pub trait SpiBackend {
     /// * `register` - Target register address
     /// * `buffer` - Buffer to store the data
     fn read_data<T: Into<u8>>(&mut self, register: T, buffer: &mut [u8]) -> Result<(), Error>;
+
+    /// Execute a write to data register (bulk)
+    ///
+    /// # Arguments
+    /// * `register` - Target register address
+    /// * `buffer` - Data to write (will be sent in 4-byte chunks)
+    fn write_data<T: Into<u8> + Copy>(&mut self, register: T, buffer: &[u8]) -> Result<(), Error> {
+        for chunk in buffer.chunks(4) {
+            let mut word = [0u8; 4];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.write_register(register, u32::from_le_bytes(word))?;
+        }
+        Ok(())
+    }
+
+    /// Set the SPI bus clock frequency in kHz.
+    ///
+    /// Default implementation is a no-op (for backends with fixed clocks).
+    fn set_spi_clock(&mut self, _freq_khz: u32) -> Result<(), Error> {
+        Ok(())
+    }
 
     /// Reset the device
     fn reset(&mut self) -> Result<(), Error>;
