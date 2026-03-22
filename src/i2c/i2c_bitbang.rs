@@ -1,6 +1,6 @@
-use std::time::Duration;
+use crate::prelude::*;
 
-use embedded_hal::i2c::{ErrorKind, ErrorType, I2c, Operation};
+use embedded_hal::{i2c::{ErrorKind, ErrorType, I2c, NoAcknowledgeSource, Operation}};
 use libftd2xx::{BitMode, Ft4232h, FtdiCommon};
 
 const BITMODE: libftd2xx::BitMode = BitMode::SyncBitbang;
@@ -36,7 +36,7 @@ impl I2cFtBitbang {
         bits
     }
 
-    fn delay_ns(&self, ns: u64) {
+    fn delay_ns(&mut self, ns: u64) {
         std::thread::sleep(Duration::from_nanos(ns));
     }
 
@@ -172,7 +172,7 @@ impl I2c for I2cFtBitbang {
                 Operation::Read(rd) => {
                     let ack = self.i2c_start_read(address);
                     if !ack {
-                        println!("Read: NACK");
+                        return Err(ErrorKind::NoAcknowledge(NoAcknowledgeSource::Address));
                     }
                     let resp = self
                         .i2c_read_bytes(rd.len());
@@ -182,7 +182,7 @@ impl I2c for I2cFtBitbang {
                 Operation::Write(wr) => {
                     let ack = self.i2c_start_write(address);
                     if !ack {
-                        println!("Write: NACK");
+                        return Err(ErrorKind::NoAcknowledge(NoAcknowledgeSource::Address));
                     }
                     self.i2c_write_bytes(&wr);
                 }

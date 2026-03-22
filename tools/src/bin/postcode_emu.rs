@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use libaspect2::Ft4232h;
 use libaspect2::i2c::i2c_bitbang::I2cFtBitbang;
-use libaspect2::eh_i2c::{I2c, Operation};
+use libaspect2::embedded_hal::i2c::{I2c, Operation};
 use rand::prelude::*;
 
 fn main() -> Result<()> {

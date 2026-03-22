@@ -3,9 +3,9 @@
 //! This backend uses `embedded_hal::spi::SpiDevice` (eh1)
 //! with optional GPIO pins for reset and enable control.
 
-use core::time::Duration;
 use embedded_hal::{delay::DelayNs, digital::OutputPin, spi::SpiDevice};
 
+use crate::prelude::*;
 use super::{GpioControl, SpiBackend};
 use crate::error::Error;
 use crate::spi::protocol::commands::{Command, Register};
@@ -44,9 +44,9 @@ where
     fn set_reset_internal(&mut self, asserted: bool) -> Result<(), Error> {
         if let Some(pin) = self.reset.as_mut() {
             if asserted {
-                pin.set_low().map_err(|_| Error::Gpio)?;
+                pin.set_low().map_err(|_| Error::InvalidGpioState)?;
             } else {
-                pin.set_high().map_err(|_| Error::Gpio)?;
+                pin.set_high().map_err(|_| Error::InvalidGpioState)?;
             }
         }
         Ok(())
@@ -56,9 +56,9 @@ where
     fn set_enable_internal(&mut self, enabled: bool) -> Result<(), Error> {
         if let Some(pin) = self.enable.as_mut() {
             if enabled {
-                pin.set_low().map_err(|_| Error::Gpio)?;
+                pin.set_low().map_err(|_| Error::InvalidGpioState)?;
             } else {
-                pin.set_high().map_err(|_| Error::Gpio)?;
+                pin.set_high().map_err(|_| Error::InvalidGpioState)?;
             }
         }
         Ok(())
@@ -93,40 +93,40 @@ where
     EN: OutputPin,
     D: DelayNs,
 {
-    fn write_register(&mut self, register: Register, data: u32) -> Result<(), Error> {
+    fn write_register<T: Into<u8>>(&mut self, register: T, data: u32) -> Result<(), Error> {
         let mut frame = [0u8; 6];
 
         frame[0] = Command::Write.bits();
-        frame[1] = register.address();
+        frame[1] = register.into();
         frame[2..6].copy_from_slice(&data.to_le_bytes());
 
-        self.spi.write(&frame).map_err(|_| Error::Spi)?;
+        self.spi.write(&frame).map_err(|_| Error::SpiError)?;
 
         Ok(())
     }
 
-    fn read_register(&mut self, register: Register) -> Result<u32, Error> {
-        let tx = [Command::Read.bits(), register.address()];
+    fn read_register<T: Into<u8>>(&mut self, register: T) -> Result<u32, Error> {
+        let tx = [Command::Read.bits(), register.into()];
         let mut rx = [0u8; 4];
 
-        self.spi.write(&tx).map_err(|_| Error::Spi)?;
+        self.spi.write(&tx).map_err(|_| Error::SpiError)?;
 
         // Match FTDI dummy clock delay
         self.delay.delay_ns(1_000);
 
-        self.spi.read(&mut rx).map_err(|_| Error::Spi)?;
+        self.spi.read(&mut rx).map_err(|_| Error::SpiError)?;
 
         Ok(u32::from_le_bytes(rx))
     }
 
-    fn read_data(&mut self, register: Register, buffer: &mut [u8]) -> Result<(), Error> {
-        let tx = [Command::Read.bits(), register.address()];
+    fn read_data<T: Into<u8>>(&mut self, register: T, buffer: &mut [u8]) -> Result<(), Error> {
+        let tx = [Command::Read.bits(), register.into()];
 
-        self.spi.write(&tx).map_err(|_| Error::Spi)?;
+        self.spi.write(&tx).map_err(|_| Error::SpiError)?;
 
         self.delay.delay_ns(1_000);
 
-        self.spi.read(buffer).map_err(|_| Error::Spi)?;
+        self.spi.read(buffer).map_err(|_| Error::SpiError)?;
 
         Ok(())
     }

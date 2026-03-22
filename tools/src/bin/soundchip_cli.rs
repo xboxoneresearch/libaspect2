@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
 use libaspect2::Ft4232h;
 use libaspect2::i2c::i2c_bitbang::I2cFtBitbang;
-use libaspect2::i2c::isd9160::{Isd9160, Isd9160Sounds};
+use libaspect2::i2c::isd9160::{self, Isd9160, Isd9160Sounds};
 use indicatif::{ProgressIterator, ProgressStyle};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -17,7 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if false {
         isd.play_sound(Isd9160Sounds::NO_DISC);
     } else {
-        let mut buf = vec![0u8; isd.read_chunk_size()];
+        let mut buf = vec![0u8; isd9160::READ_CHUNK_SIZE];
         println!("Reading flash...");
         let mut file = std::fs::File::create("flash.bin")?;
         for _ in (0..isd.flash_size())

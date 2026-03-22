@@ -1,5 +1,6 @@
 /// Transaction types and builders for eMMC SPI protocol
 
+use crate::prelude::*;
 use super::commands::{Command, Register, DataSize};
 
 /// Transaction type (hardware-independent representation)

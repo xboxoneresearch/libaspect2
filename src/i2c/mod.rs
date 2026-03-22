@@ -1,2 +1,3 @@
+#[cfg(feature = "ftdi")]
 pub mod i2c_bitbang;
 pub mod isd9160;

@@ -1,4 +1,5 @@
 /// Command and register definitions for eMMC SPI protocol
+use crate::prelude::*;
 
 /// SPI Command type (2 bits)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

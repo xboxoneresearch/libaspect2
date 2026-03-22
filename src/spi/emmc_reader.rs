@@ -2,13 +2,11 @@
 ///
 /// This module provides a clean, high-level API for reading from the eMMC chip,
 /// using the backend abstraction to work with any SPI implementation.
-use std::fmt;
-
-use deku::{DekuContainerRead, DekuRead};
-
 use super::backend::SpiBackend;
 use super::protocol::commands::{Register, status, transfer_config};
+use crate::prelude::*;
 use crate::error::Error;
+use crate::DelayTrait;
 
 //Development Mode, SMCFWKey:Devkit
 const B1SMCBL_HASH_DEVKIT: [u8; 16] = hex_literal::hex!("C0DE15B90000FFFFA5A55A5A1234FEDC");
@@ -21,8 +19,8 @@ const B1SMCBL_HASH_RTL_C: [u8; 16] = hex_literal::hex!("A3192969B3B3068F1246B9B4
 // # Production Mode, SMCFWKey:rtlD
 const B1SMCBL_HASH_RTL_D: [u8; 16] = hex_literal::hex!("DF219ABE760F9B32BCBE86C254010F52");
 
-#[derive(Debug, DekuRead)]
-struct SMC_FUSES {
+#[derive(Debug)]
+pub struct SMC_FUSES {
     ECID: [u8; 8],
     Exp1SMCBLDigest: [u8; 16],
     RsvdPublic: [u8; 8],
@@ -31,8 +29,9 @@ struct SMC_FUSES {
     SbRev: [u8; 4],
 }
 
-impl fmt::Display for SMC_FUSES {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+#[cfg(feature = "std")]
+impl std::fmt::Display for SMC_FUSES {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let smc_flavor = match self.Exp1SMCBLDigest {
             B1SMCBL_HASH_DEVKIT => "Development Mode, SMCFWKey:Devkit".to_string(),
             B1SMCBL_HASH_RTL_A => "Production Mode, SMCFWKey:rtlA".to_string(),
@@ -53,17 +52,19 @@ impl fmt::Display for SMC_FUSES {
 }
 
 /// eMMC SPI Reader - works with any backend
-pub struct EmmcReader<B: SpiBackend> {
+pub struct EmmcReader<B: SpiBackend, D: DelayTrait> {
     pub backend: B,
     initialized: bool,
+    delay: D,
 }
 
-impl<B: SpiBackend> EmmcReader<B> {
+impl<B: SpiBackend, D: DelayTrait> EmmcReader<B, D> {
     /// Create a new reader with the specified backend
-    pub fn new(backend: B) -> Self {
+    pub fn new(backend: B, delay_impl: D) -> Self {
         Self {
             backend,
             initialized: false,
+            delay: delay_impl,
         }
     }
 
@@ -92,7 +93,7 @@ impl<B: SpiBackend> EmmcReader<B> {
     fn set_output_delay(&mut self, delay: u32) {}
 
     fn decode_response_r1x(&mut self) {}
-    pub fn dump_fuses(&mut self) -> Result<(), Error> {
+    pub fn dump_fuses(&mut self) -> Result<SMC_FUSES, Error> {
         self.backend.initialize()?;
 
         // Write 0x00000003 to register 0x44
@@ -108,14 +109,30 @@ impl<B: SpiBackend> EmmcReader<B> {
             pos += size_of::<u32>();
         }
 
-        let (left, fuses) = SMC_FUSES::from_bytes((&mut buf, 0)).unwrap();
+        // Copy data from buf into SMC_FUSES struct
+        let mut offset = 0;
+        let ecid: [u8; 8] = buf[offset..offset + 8].try_into().unwrap();
+        offset += 8;
+        let exp1smcbldigest: [u8; 16] = buf[offset..offset + 16].try_into().unwrap();
+        offset += 16;
+        let rsvdpublic: [u8; 8] = buf[offset..offset + 8].try_into().unwrap();
+        offset += 8;
+        let rsvdprivate: [u8; 8] = buf[offset..offset + 8].try_into().unwrap();
+        offset += 8;
+        let chipid: [u8; 12] = buf[offset..offset + 12].try_into().unwrap();
+        offset += 12;
+        let sbrev: [u8; 4] = buf[offset..offset + 4].try_into().unwrap();
 
-        assert!(left.0.is_empty());
-        assert_eq!(left.1, 0);
+        let fuses = SMC_FUSES {
+            ECID: ecid,
+            Exp1SMCBLDigest: exp1smcbldigest,
+            RsvdPublic: rsvdpublic,
+            RsvdPrivate: rsvdprivate,
+            ChipID: chipid,
+            SbRev: sbrev,
+        };
 
-        println!("{fuses}");
-
-        Ok(())
+        Ok(fuses)
     }
     fn dump_mmc_registers(&mut self) {}
 
@@ -165,18 +182,18 @@ impl<B: SpiBackend> EmmcReader<B> {
             if current_val.is_none() {
                 assert_eq!(0xFF8080, res);
                 current_val = Some(res);
-                println!("Current val: {res:#08X}");
+                //println!("Current val: {res:#08X}");
             }
 
             if let Some(val) = current_val {
                 if val != res {
                     assert_eq!(0xC0FF8080, res);
-                    println!("Val changed, prev: {val:#08X}, now: {res:#08X}");
+                    //println!("Val changed, prev: {val:#08X}, now: {res:#08X}");
                     break;
                 }
             }
 
-            std::thread::sleep(std::time::Duration::from_micros(100));
+            self.delay.delay_us(100);
         }
 
         self.write_register(Register::Argument, 0x0)?;
@@ -371,7 +388,7 @@ impl<B: SpiBackend> EmmcReader<B> {
             if status_value == value {
                 return Ok(());
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            self.delay.delay_ms(10);
         }
 
         return Err(Error::Timeout);
@@ -460,7 +477,7 @@ impl<B: SpiBackend> EmmcReader<B> {
         self.poll_for_value(Register::InterruptStatus, status::TRANSFER_COMPLETE)?;
         self.write_register(Register::InterruptStatus, status::TRANSFER_COMPLETE)?;
 
-        println!("WARNING: erase_page is a STUB - protocol sequence not yet validated");
+        todo!("WARNING: erase_page is a STUB - protocol sequence not yet validated");
 
         Ok(())
     }
@@ -514,7 +531,7 @@ impl<B: SpiBackend> EmmcReader<B> {
         self.poll_for_value(Register::InterruptStatus, status::TRANSFER_COMPLETE)?;
         self.write_register(Register::InterruptStatus, status::TRANSFER_COMPLETE)?;
 
-        println!("WARNING: write_page is a STUB - protocol sequence not yet validated");
+        todo!("WARNING: write_page is a STUB - protocol sequence not yet validated");
 
         // Prevent unused variable warning
         let _ = buffer;
@@ -526,6 +543,14 @@ impl<B: SpiBackend> EmmcReader<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DelayTrait;
+
+    // Mock delay
+    struct MockDelay;
+
+    impl DelayTrait for MockDelay {
+        fn delay_ns(&mut self, ns: u32) {}
+    }
 
     // Mock backend for testing
     struct MockBackend {
@@ -569,8 +594,9 @@ mod tests {
 
     #[test]
     fn test_read_write() {
+        let delay_impl = MockDelay;
         let backend = MockBackend::new();
-        let mut reader = EmmcReader::new(backend);
+        let mut reader = EmmcReader::new(backend, delay_impl);
         // reader.init().unwrap();
 
         // Write and read back
