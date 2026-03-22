@@ -1,4 +1,5 @@
 /// Command and register definitions for eMMC SPI protocol
+use crate::prelude::*;
 
 /// SPI Command type (2 bits)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,9 +76,9 @@ pub enum Register {
     XipDataLast = 0xCD,
 }
 
-impl Into<u8> for Register {
-    fn into(self) -> u8 {
-        self as u8
+impl From<Register> for u8 {
+    fn from(val: Register) -> Self {
+        val as u8
     }
 }
 

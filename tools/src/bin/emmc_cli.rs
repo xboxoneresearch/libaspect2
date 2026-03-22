@@ -3,8 +3,10 @@ use indicatif::{ProgressIterator, ProgressStyle};
 use libaspect2::spi::backend::SpiBackend;
 use libaspect2::spi::backend::ftdi::FtdiBackend;
 use libaspect2::spi::emmc_reader::EmmcReader;
+use libaspect2::DelayTrait;
 use std::fs::File;
 use std::io::Write;
+use std::time::Duration;
 
 const MAX_NAND_PAGES: u32 = 0x9E0000;
 
@@ -23,6 +25,14 @@ struct Args {
     op: Command,
 }
 
+struct Delay;
+
+impl DelayTrait for Delay {
+    fn delay_ns(&mut self, ns: u32) {
+        std::thread::sleep(Duration::from_nanos(ns as u64))
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("eMMC SPI Reader");
 
@@ -32,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = FtdiBackend::open("Facet2 FabA+ A")?;
 
     // Create reader with FTDI backend
-    let mut reader = EmmcReader::new(backend);
+    let mut reader = EmmcReader::new(backend, Delay);
 
     match args.op {
         Command::Reset => {

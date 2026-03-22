@@ -1,4 +1,6 @@
+use crate::prelude::*;
 use thiserror::Error as DeriveError;
+#[cfg(feature = "ftdi")]
 use libftd2xx::{TimeoutError as FtdiTimeout, FtStatus, DeviceTypeError};
 
 #[derive(DeriveError, Debug)]
@@ -6,15 +8,21 @@ pub enum Error {
     #[error("Not implemented")]
     Todo,
     
+    #[cfg(feature = "ftdi")]
     #[error("FTDI Timeout")]
     DeviceTimeout(#[from] FtdiTimeout),
     
+    #[cfg(feature = "ftdi")]
     #[error("FTDI Status: {0}")]
     FtStatus(#[from] FtStatus),
     
+    #[cfg(feature = "ftdi")]
     #[error("FTDI Device Type Error: {0}")]
     DeviceTypeError(#[from] DeviceTypeError),
     
+    #[error("SPI error")]
+    SpiError,
+
     #[error("Invalid GPIO state")]
     InvalidGpioState,
     

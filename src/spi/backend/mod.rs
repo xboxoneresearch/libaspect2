@@ -4,16 +4,12 @@ use super::protocol::transaction::TransactionType;
 ///
 /// This module defines a common trait for SPI backends and provides
 /// implementations for both FTDI and embedded-hal.
+use crate::prelude::*;
 use crate::error::Error;
 
+#[cfg(feature = "ftdi")]
 pub mod ftdi;
-
-#[cfg(feature = "embedded-hal")]
-pub mod eh0;
-#[cfg(feature = "embedded-hal")]
-pub mod eh1;
-#[cfg(feature = "embedded-hal")]
-pub mod embedded_hal;
+pub mod eh;
 
 /// Common SPI backend trait
 ///
@@ -42,28 +38,6 @@ pub trait SpiBackend {
     /// * `register` - Target register address
     /// * `buffer` - Buffer to store the data
     fn read_data<T: Into<u8>>(&mut self, register: T, buffer: &mut [u8]) -> Result<(), Error>;
-
-    /// Execute a generic transaction
-    ///
-    /// This is a convenience method that dispatches to the appropriate
-    /// method based on transaction type.
-    fn execute_transaction(&mut self, txn: &TransactionType) -> Result<Option<Vec<u8>>, Error> {
-        match txn {
-            TransactionType::Write { register, data } => {
-                self.write_register(*register, *data)?;
-                Ok(None)
-            }
-            TransactionType::Read { register } => {
-                let value = self.read_register(*register)?;
-                Ok(Some(value.to_le_bytes().to_vec()))
-            }
-            TransactionType::ReadData { register } => {
-                let mut buffer = [0u8; 512];
-                self.read_data(*register, &mut buffer)?;
-                Ok(Some(buffer.to_vec()))
-            }
-        }
-    }
 
     /// Reset the device
     fn reset(&mut self) -> Result<(), Error>;

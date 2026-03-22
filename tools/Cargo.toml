@@ -9,7 +9,7 @@ log = "0.4.22"
 simple_logger = "5.0.0"
 anyhow = "1.0.100"
 rand = "0.9.2"
-libaspect2 = { path = "../" }
+libaspect2 = { path = "../", features = ["ftdi"] }
 clap = { version = "4.5.57", features = ["derive"]}
 
 [[bin]]
