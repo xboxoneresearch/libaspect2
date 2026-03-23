@@ -26,6 +26,33 @@ use usb_device::prelude::*;
 use libaspect2::spi::emmc_reader::{EmmcReader, EraseType};
 use libaspect2::spi::backend::eh::Eh1SpiBackend;
 
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum OpCode {
+    Read = 1,
+    Write,
+    Erase,
+    Reset,
+    DumpFuses
+}
+
+impl OpCode {
+    pub fn to_byte(&self) -> u8 {
+        *self as u8
+    }
+
+    pub fn from_byte(byte: u8) -> Option<OpCode> {
+        match byte {
+            1 => Some(OpCode::Read),
+            2 => Some(OpCode::Write),
+            3 => Some(OpCode::Erase),
+            4 => Some(OpCode::Reset),
+            5 => Some(OpCode::DumpFuses),
+            _ => None,
+        }
+    }
+}
+
 const SPI_BITLEN: u8 = 8;
 
 #[derive(Clone, Copy)]
@@ -168,51 +195,57 @@ fn main() -> ! {
         match serial.read(&mut buf) {
             Ok(count) if count > 0 => {
                 // Very basic protocol: [cmd, ...payload]
-                match buf[0] {
-                    0x01 => { // Dump fuses
-                        // TODO: implement fuse dump
-                        let _ = serial.write(b"fuse:stub\n");
-                    }
-                    0x02 => { // Read page: [0x02, lba:4]
-                        if count >= 5 {
-                            let lba = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]);
-                            let mut page = [0u8; 512];
-                            if emmc.read_page(lba, &mut page).is_ok() {
-                                let _ = serial.write(&page);
-                            } else {
-                                let _ = serial.write(b"ERR\n");
+                if let Some(op) = OpCode::from_byte(buf[0]) {
+                    match op {
+                        OpCode::Read => { // Read page: [0x02, lba:4]
+                            if count >= 5 {
+                                let lba = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]);
+                                let mut page = [0u8; 512];
+                                if emmc.read_page(lba, &mut page).is_ok() {
+                                    let _ = serial.write(&page);
+                                } else {
+                                    let _ = serial.write(b"ERR\n");
+                                }
                             }
                         }
-                    }
-                    0x03 => { // Write page: [0x03, lba:4, data:512]
-                        if count >= 5+512 {
-                            let lba = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]);
-                            let mut page = [0u8; 512];
-                            page.copy_from_slice(&buf[5..5+512]);
-                            if emmc.write_page(lba, &page).is_ok() {
-                                let _ = serial.write(b"OK\n");
-                            } else {
-                                let _ = serial.write(b"ERR\n");
+                        OpCode::Write => { // Write page: [0x03, lba:4, data:512]
+                            if count >= 5+512 {
+                                let lba = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]);
+                                let mut page = [0u8; 512];
+                                page.copy_from_slice(&buf[5..5+512]);
+                                if emmc.write_page(lba, &page).is_ok() {
+                                    let _ = serial.write(b"OK\n");
+                                } else {
+                                    let _ = serial.write(b"ERR\n");
+                                }
                             }
                         }
-                    }
-                    0x04 => { // Erase: [0x04, start:4, len:4]
-                        if count >= 9 {
-                            let start = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]) as u64;
-                            let len = u32::from_le_bytes([buf[5], buf[6], buf[7], buf[8]]) as u64;
-                            if emmc.erase(EraseType::Erase, start, len).is_ok() {
-                                let _ = serial.write(b"OK\n");
-                            } else {
-                                let _ = serial.write(b"ERR\n");
+                        OpCode::Erase => { // Erase: [0x04, start:4, len:4]
+                            if count >= 9 {
+                                let start = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]) as u64;
+                                let len = u32::from_le_bytes([buf[5], buf[6], buf[7], buf[8]]) as u64;
+                                if emmc.erase(EraseType::Erase, start, len).is_ok() {
+                                    let _ = serial.write(b"OK\n");
+                                } else {
+                                    let _ = serial.write(b"ERR\n");
+                                }
                             }
                         }
-                    }
-                    _ => {
-                        let _ = serial.write(b"?\n");
+                        OpCode::Reset => {
+                            // TODO: implement fuse dump
+                            let _ = serial.write(b"fuse:stub\n");
+                        }
+                        OpCode::DumpFuses => { // Dump fuses
+                            // TODO: implement fuse dump
+                            let _ = serial.write(b"fuse:stub\n");
+                        }
+                        _ => {
+                            let _ = serial.write(b"?\n");
+                        }
                     }
                 }
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 }
