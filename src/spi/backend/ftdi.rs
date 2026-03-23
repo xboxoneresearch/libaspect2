@@ -1,5 +1,5 @@
 use bitflags::bitflags;
-use libftd2xx::{Ft2232h, FtdiCommon, FtdiMpsse, MpsseCmdBuilder, MpsseCmdExecutor};
+use libftd2xx::{Ft4232h, FtdiCommon, FtdiMpsse, MpsseCmdBuilder, MpsseCmdExecutor};
 /// FTDI backend implementation using libftd2xx
 ///
 /// This backend provides direct FTDI MPSSE access for maximum performance.
@@ -35,14 +35,14 @@ bitflags! {
 
 /// FTDI SPI Backend
 pub struct FtdiBackend {
-    dev: Ft2232h,
+    dev: Ft4232h,
     /// Cached GPIO pin state — avoids a USB round-trip per register access.
     cached_pins: SpiPin,
 }
 
 impl FtdiBackend {
     /// Create a new FTDI backend with the specified device
-    pub fn new(dev: Ft2232h) -> Self {
+    pub fn new(dev: Ft4232h) -> Self {
         Self {
             dev,
             cached_pins: SpiPin::SS_N | SpiPin::EN_N | SpiPin::RST_N,
@@ -51,7 +51,7 @@ impl FtdiBackend {
 
     /// Open FTDI device by description
     pub fn open(description: &str) -> Result<Self, Error> {
-        let dev = Ft2232h::with_description(description)?;
+        let dev = Ft4232h::with_description(description)?;
         Ok(Self::new(dev))
     }
 
