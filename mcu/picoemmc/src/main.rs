@@ -1,8 +1,11 @@
 #![no_std]
 #![no_main]
 
-use hal::timer::{monotonic::Monotonic, Alarm};
+use embedded_hal_bus::spi::ExclusiveDevice;
+use embedded_timers::instant::Instant64;
+use hal::timer::monotonic::Monotonic;
 use embedded_timers::clock::Clock as ETClock;
+use libaspect2::clock::DelayNs;
 // Ensure we halt the program on panic (if we don't mention this crate it won't
 // be linked)
 use panic_halt as _;
@@ -17,33 +20,39 @@ use hal::pac;
 // Some traits we need
 use hal::fugit::RateExtU32;
 use rp2040_hal::clocks::Clock;
-use rtic::Monotonic as _;
 use usb_device::class_prelude::*;
 use usb_device::prelude::*;
 
+use libaspect2::spi::emmc_reader::{EmmcReader, EraseType};
+use libaspect2::spi::backend::eh::Eh1SpiBackend;
+
+const SPI_BITLEN: u8 = 8;
 
 #[derive(Clone, Copy)]
-pub struct PicoClockDelay<'a, A>
-where A: Alarm
+pub struct PicoClockDelay
 {
-    timer: &'a Monotonic<A>,
+    _timer: u8,
 }
 
-impl<'a, A> PicoClockDelay<'a, A>
-where A: Alarm
+impl PicoClockDelay
 {
-    pub fn new(timer: &'a mut Monotonic<A>) -> Self {
-        Self { timer }
+    pub fn new() -> Self {
+        Self { _timer: 0 }
     }
 }
 
-impl<'a, A> ETClock for PicoClockDelay<'a, A>
-where A: Alarm
+impl ETClock for PicoClockDelay
 {
-    type Instant = embedded_timers::instant::Instant64<1000>;
+    type Instant = Instant64<1000>;
     fn now(&self) -> Self::Instant {
-        let ticks = self.timer.now();
-        embedded_timers::instant::Instant64::<1000>::new(ticks.ticks())
+        Instant64::<1000>::new(0)
+    }
+}
+
+impl DelayNs for PicoClockDelay
+{
+    fn delay_ns(&mut self, _ns: u32) {
+        
     }
 }
 
@@ -87,11 +96,6 @@ fn main() -> ! {
     )
     .unwrap();
 
-    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
-    let mut timer = Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
-    let mut monotonic = Monotonic::new(timer, timer.alarm_0().unwrap());
-    let mut clockdelay = PicoClockDelay::new(&mut monotonic);
-
     // The single-cycle I/O block controls our GPIO pins
     let sio = hal::Sio::new(pac.SIO);
 
@@ -103,44 +107,54 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
+    // --- Timers ---
+
+    let mut timer = Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
+
+    let mut _delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
+    let mut _monotonic = Monotonic::new(timer, timer.alarm_0().unwrap());
+    let clockdelay = PicoClockDelay::new();
+
     // --- SPI bus setup (use GPIO2-5 for SPI0) ---
-    let sck = pins.gpio2.into_function::<hal::gpio::FunctionSpi>();
-    let mosi = pins.gpio3.into_function::<hal::gpio::FunctionSpi>();
-    let miso = pins.gpio4.into_function::<hal::gpio::FunctionSpi>();
-    let cs = pins.gpio5.into_push_pull_output();
-    let spi = hal::spi::Spi::<_, 8>::new(pac.SPI0, (sck, mosi, miso));
-    let spi = spi.init(
+    let spi_miso = pins.gpio2.into_function::<hal::gpio::FunctionSpi>();
+    let spi_sck = pins.gpio3.into_function::<hal::gpio::FunctionSpi>();
+    let spi_mosi = pins.gpio4.into_function::<hal::gpio::FunctionSpi>();
+    let spi_cs = pins.gpio5.into_push_pull_output();
+    
+    let spi_bus = hal::spi::Spi::<_, _, _, SPI_BITLEN>::new(pac.SPI0, (spi_sck, spi_mosi, spi_miso));
+    let spi_bus = spi_bus.init(
         &mut pac.RESETS,
         clocks.peripheral_clock.freq(),
         1_000_000u32.Hz(),
         &embedded_hal::spi::MODE_0,
     );
+    let spi = ExclusiveDevice::new(spi_bus, spi_cs, &mut timer).unwrap();
+
+    // --- SMC reset ---
+    let smc_rst = pins.gpio0.into_push_pull_output_in_state(rp2040_hal::gpio::PinState::High);
 
     // --- USB-CDC setup ---
-    static mut USB_BUS: Option<UsbBusAllocator<hal::usb::UsbBus>> = None;
-    let usb_bus = unsafe {
-        USB_BUS.get_or_insert_with(|| {
-            UsbBusAllocator::new(hal::usb::UsbBus::new(
-                pac.USBCTRL_REGS,
-                pac.USBCTRL_DPRAM,
-                clocks.usb_clock,
-                true,
-                &mut pac.RESETS,
-            ))
-        })
-    };
-    let mut serial = usbd_serial::SerialPort::new(usb_bus);
-    let mut usb_dev = UsbDeviceBuilder::new(usb_bus, UsbVidPid(0x1209, 0x0001))
-
-//        .manufacturer("libaspect2")
-//       .product("picoemmc")
-//        .serial_number("0001")
+    let usb_bus =
+        UsbBusAllocator::new(hal::usb::UsbBus::new(
+            pac.USBCTRL_REGS,
+            pac.USBCTRL_DPRAM,
+            clocks.usb_clock,
+            true,
+            &mut pac.RESETS,
+        ));
+    let mut serial = usbd_serial::SerialPort::new(&usb_bus);
+    let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x1209, 0x0001))
+//      .manufacturer("libaspect2")
+//      .product("picoemmc")
+//      .serial_number("0001")
         .device_class(usbd_serial::USB_CLASS_CDC)
         .build();
 
     // --- eMMC Reader setup ---
-    let mut emmc = libaspect2::spi::emmc_reader::EmmcReader::new(
-        libaspect2::spi::backend::eh::Eh1SpiBackend::new(spi, None, None, clockdelay),
+    let dummy_pin = pins.gpio17.into_push_pull_output();
+
+    let mut emmc = EmmcReader::new(
+        Eh1SpiBackend::new(spi, Some(smc_rst), Some(dummy_pin), clockdelay),
         clockdelay,
     );
     let _ = emmc.init(); // Try to init card (ignore error for now)
@@ -186,7 +200,7 @@ fn main() -> ! {
                         if count >= 9 {
                             let start = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]) as u64;
                             let len = u32::from_le_bytes([buf[5], buf[6], buf[7], buf[8]]) as u64;
-                            if emmc.erase(libaspect2::spi::emmc_reader::EraseType::Erase, start, len).is_ok() {
+                            if emmc.erase(EraseType::Erase, start, len).is_ok() {
                                 let _ = serial.write(b"OK\n");
                             } else {
                                 let _ = serial.write(b"ERR\n");
