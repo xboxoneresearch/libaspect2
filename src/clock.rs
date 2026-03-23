@@ -1,4 +1,4 @@
-use embedded_hal::delay::DelayNs;
+pub use embedded_hal::delay::DelayNs;
 pub use embedded_timers::clock::Clock as ClockTrait;
 pub use embedded_timers::delay::Delay;
 pub use embedded_timers::instant::Instant;

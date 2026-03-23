@@ -1,0 +1,308 @@
+picoemmc v0.1.0 (/home/e99/Development/personal/durango/libaspect2/mcu/picoemmc)
+├── cortex-m v0.7.7
+│   ├── bare-metal v0.2.5
+│   │   [build-dependencies]
+│   │   └── rustc_version v0.2.3
+│   │       └── semver v0.9.0
+│   │           └── semver-parser v0.7.0
+│   ├── bitfield v0.13.2
+│   ├── embedded-hal v0.2.7
+│   │   ├── nb v0.1.3
+│   │   │   └── nb v1.1.0
+│   │   └── void v1.0.2
+│   └── volatile-register v0.2.2
+│       └── vcell v0.1.3
+├── cortex-m-rt v0.7.5
+│   └── cortex-m-rt-macros v0.7.5 (proc-macro)
+│       ├── proc-macro2 v1.0.106
+│       │   └── unicode-ident v1.0.22
+│       ├── quote v1.0.44
+│       │   └── proc-macro2 v1.0.106 (*)
+│       └── syn v2.0.114
+│           ├── proc-macro2 v1.0.106 (*)
+│           ├── quote v1.0.44 (*)
+│           └── unicode-ident v1.0.22
+├── cortex-m-rtic v1.1.4
+│   ├── bare-metal v1.0.0
+│   ├── cortex-m v0.7.7 (*)
+│   ├── cortex-m-rtic-macros v1.1.6 (proc-macro)
+│   │   ├── proc-macro-error v1.0.4
+│   │   │   ├── proc-macro-error-attr v1.0.4 (proc-macro)
+│   │   │   │   ├── proc-macro2 v1.0.106 (*)
+│   │   │   │   └── quote v1.0.44 (*)
+│   │   │   │   [build-dependencies]
+│   │   │   │   └── version_check v0.9.5
+│   │   │   ├── proc-macro2 v1.0.106 (*)
+│   │   │   ├── quote v1.0.44 (*)
+│   │   │   └── syn v1.0.109
+│   │   │       ├── proc-macro2 v1.0.106 (*)
+│   │   │       ├── quote v1.0.44 (*)
+│   │   │       └── unicode-ident v1.0.22
+│   │   │   [build-dependencies]
+│   │   │   └── version_check v0.9.5
+│   │   ├── proc-macro2 v1.0.106 (*)
+│   │   ├── quote v1.0.44 (*)
+│   │   ├── rtic-syntax v1.0.3
+│   │   │   ├── indexmap v1.9.3
+│   │   │   │   └── hashbrown v0.12.3
+│   │   │   │   [build-dependencies]
+│   │   │   │   └── autocfg v1.5.0
+│   │   │   ├── proc-macro2 v1.0.106 (*)
+│   │   │   ├── quote v1.0.44 (*)
+│   │   │   └── syn v1.0.109 (*)
+│   │   └── syn v1.0.109 (*)
+│   ├── heapless v0.7.17
+│   │   ├── atomic-polyfill v1.0.3
+│   │   │   └── critical-section v1.2.0
+│   │   ├── hash32 v0.2.1
+│   │   │   └── byteorder v1.5.0
+│   │   └── stable_deref_trait v1.2.1
+│   │   [build-dependencies]
+│   │   └── rustc_version v0.4.1
+│   │       └── semver v1.0.27
+│   ├── rtic-core v1.0.0
+│   └── rtic-monotonic v1.0.0
+│   [build-dependencies]
+│   └── version_check v0.9.5
+├── critical-section v1.2.0
+├── defmt v0.3.100
+│   └── defmt v1.0.1
+│       ├── bitflags v1.3.2
+│       └── defmt-macros v1.0.1 (proc-macro)
+│           ├── defmt-parser v1.0.0
+│           │   └── thiserror v2.0.18
+│           │       └── thiserror-impl v2.0.18 (proc-macro)
+│           │           ├── proc-macro2 v1.0.106 (*)
+│           │           ├── quote v1.0.44 (*)
+│           │           └── syn v2.0.114 (*)
+│           ├── proc-macro-error2 v2.0.1
+│           │   ├── proc-macro-error-attr2 v2.0.0 (proc-macro)
+│           │   │   ├── proc-macro2 v1.0.106 (*)
+│           │   │   └── quote v1.0.44 (*)
+│           │   ├── proc-macro2 v1.0.106 (*)
+│           │   ├── quote v1.0.44 (*)
+│           │   └── syn v2.0.114 (*)
+│           ├── proc-macro2 v1.0.106 (*)
+│           ├── quote v1.0.44 (*)
+│           └── syn v2.0.114 (*)
+├── defmt-rtt v0.4.2
+│   ├── critical-section v1.2.0
+│   └── defmt v0.3.100 (*)
+├── embassy-executor v0.5.1
+│   ├── cortex-m v0.7.7 (*)
+│   ├── critical-section v1.2.0
+│   ├── document-features v0.2.12 (proc-macro)
+│   │   └── litrs v1.0.0
+│   └── embassy-executor-macros v0.4.2 (proc-macro)
+│       ├── darling v0.20.11
+│       │   ├── darling_core v0.20.11
+│       │   │   ├── fnv v1.0.7
+│       │   │   ├── ident_case v1.0.1
+│       │   │   ├── proc-macro2 v1.0.106 (*)
+│       │   │   ├── quote v1.0.44 (*)
+│       │   │   ├── strsim v0.11.1
+│       │   │   └── syn v2.0.114 (*)
+│       │   └── darling_macro v0.20.11 (proc-macro)
+│       │       ├── darling_core v0.20.11 (*)
+│       │       ├── quote v1.0.44 (*)
+│       │       └── syn v2.0.114 (*)
+│       ├── proc-macro2 v1.0.106 (*)
+│       ├── quote v1.0.44 (*)
+│       └── syn v2.0.114 (*)
+├── embedded-alloc v0.5.1
+│   ├── critical-section v1.2.0
+│   └── linked_list_allocator v0.10.5
+├── embedded-hal v0.2.7 (*)
+├── embedded-hal v1.0.0
+│   └── defmt v0.3.100 (*)
+├── embedded-hal-async v1.0.0
+│   └── embedded-hal v1.0.0 (*)
+├── embedded-hal-bus v0.3.0
+│   ├── critical-section v1.2.0
+│   ├── defmt v0.3.100 (*)
+│   └── embedded-hal v1.0.0 (*)
+├── embedded-io v0.7.1
+├── embedded-timers v0.4.0
+│   ├── embedded-hal v1.0.0 (*)
+│   ├── nb v1.1.0
+│   └── void v1.0.2
+├── futures v0.3.32
+│   ├── futures-channel v0.3.32
+│   │   ├── futures-core v0.3.32
+│   │   └── futures-sink v0.3.32
+│   ├── futures-core v0.3.32
+│   ├── futures-io v0.3.32
+│   ├── futures-sink v0.3.32
+│   ├── futures-task v0.3.32
+│   └── futures-util v0.3.32
+│       ├── futures-core v0.3.32
+│       ├── futures-macro v0.3.32 (proc-macro)
+│       │   ├── proc-macro2 v1.0.106 (*)
+│       │   ├── quote v1.0.44 (*)
+│       │   └── syn v2.0.114 (*)
+│       ├── futures-sink v0.3.32
+│       ├── futures-task v0.3.32
+│       └── pin-project-lite v0.2.17
+├── libaspect2 v0.1.0 (/home/e99/Development/personal/durango/libaspect2)
+│   ├── bitflags v2.10.0
+│   ├── embedded-hal v1.0.0 (*)
+│   ├── embedded-timers v0.4.0 (*)
+│   ├── hex v0.4.3
+│   ├── hex-literal v1.1.0
+│   └── thiserror v2.0.18
+│       └── thiserror-impl v2.0.18 (proc-macro) (*)
+├── nb v1.1.0
+├── panic-halt v0.2.0
+├── panic-probe v0.3.2
+│   ├── cortex-m v0.7.7 (*)
+│   └── defmt v0.3.100 (*)
+├── pio v0.3.0
+│   ├── pio-core v0.3.0
+│   │   ├── arrayvec v0.7.6
+│   │   ├── num_enum v0.7.6
+│   │   │   ├── num_enum_derive v0.7.6 (proc-macro)
+│   │   │   │   ├── proc-macro2 v1.0.106 (*)
+│   │   │   │   ├── quote v1.0.44 (*)
+│   │   │   │   └── syn v2.0.114 (*)
+│   │   │   └── rustversion v1.0.22 (proc-macro)
+│   │   └── paste v1.0.15 (proc-macro)
+│   └── pio-proc v0.3.0 (proc-macro)
+│       ├── codespan-reporting v0.11.1
+│       │   ├── termcolor v1.4.1
+│       │   └── unicode-width v0.1.14
+│       ├── lalrpop-util v0.22.2
+│       │   ├── regex-automata v0.4.14
+│       │   │   ├── aho-corasick v1.1.4
+│       │   │   │   └── memchr v2.8.0
+│       │   │   ├── memchr v2.8.0
+│       │   │   └── regex-syntax v0.8.10
+│       │   └── rustversion v1.0.22 (proc-macro)
+│       ├── pio-core v0.3.0
+│       │   ├── arrayvec v0.7.6
+│       │   ├── num_enum v0.7.6
+│       │   │   ├── num_enum_derive v0.7.6 (proc-macro) (*)
+│       │   │   └── rustversion v1.0.22 (proc-macro)
+│       │   └── paste v1.0.15 (proc-macro)
+│       ├── pio-parser v0.3.0
+│       │   ├── lalrpop-util v0.22.2 (*)
+│       │   └── pio-core v0.3.0 (*)
+│       │   [build-dependencies]
+│       │   └── lalrpop v0.22.2
+│       │       ├── ascii-canvas v4.0.0
+│       │       │   └── term v1.2.1
+│       │       ├── bit-set v0.8.0
+│       │       │   └── bit-vec v0.8.0
+│       │       ├── ena v0.14.4
+│       │       │   └── log v0.4.29
+│       │       ├── itertools v0.14.0
+│       │       │   └── either v1.15.0
+│       │       ├── lalrpop-util v0.22.2 (*)
+│       │       ├── petgraph v0.7.1
+│       │       │   ├── fixedbitset v0.5.7
+│       │       │   └── indexmap v2.13.0
+│       │       │       ├── equivalent v1.0.2
+│       │       │       └── hashbrown v0.16.1
+│       │       ├── pico-args v0.5.0
+│       │       ├── regex v1.12.3
+│       │       │   ├── regex-automata v0.4.14 (*)
+│       │       │   └── regex-syntax v0.8.10
+│       │       ├── regex-syntax v0.8.10
+│       │       ├── sha3 v0.10.8
+│       │       │   ├── digest v0.10.7
+│       │       │   │   ├── block-buffer v0.10.4
+│       │       │   │   │   └── generic-array v0.14.7
+│       │       │   │   │       └── typenum v1.19.0
+│       │       │   │   │       [build-dependencies]
+│       │       │   │   │       └── version_check v0.9.5
+│       │       │   │   └── crypto-common v0.1.7
+│       │       │   │       ├── generic-array v0.14.7 (*)
+│       │       │   │       └── typenum v1.19.0
+│       │       │   └── keccak v0.1.6
+│       │       ├── string_cache v0.8.9
+│       │       │   ├── new_debug_unreachable v1.0.6
+│       │       │   ├── parking_lot v0.12.5
+│       │       │   │   ├── lock_api v0.4.14
+│       │       │   │   │   └── scopeguard v1.2.0
+│       │       │   │   └── parking_lot_core v0.9.12
+│       │       │   │       ├── cfg-if v1.0.4
+│       │       │   │       ├── libc v0.2.180
+│       │       │   │       └── smallvec v1.15.1
+│       │       │   ├── phf_shared v0.11.3
+│       │       │   │   └── siphasher v1.0.2
+│       │       │   └── precomputed-hash v0.1.1
+│       │       ├── term v1.2.1
+│       │       ├── unicode-xid v0.2.6
+│       │       └── walkdir v2.5.0
+│       │           └── same-file v1.0.6
+│       ├── proc-macro-error2 v2.0.1 (*)
+│       ├── proc-macro2 v1.0.106 (*)
+│       ├── quote v1.0.44 (*)
+│       └── syn v2.0.114 (*)
+├── portable-atomic v1.13.0
+│   └── critical-section v1.2.0
+├── rp2040-boot2 v0.3.0
+│   [build-dependencies]
+│   └── crc-any v2.5.0
+│       └── debug-helper v0.3.13
+├── rp2040-hal v0.12.0
+│   ├── bitfield v0.14.0
+│   ├── cortex-m v0.7.7 (*)
+│   ├── critical-section v1.2.0
+│   ├── defmt v0.3.100 (*)
+│   ├── embedded-dma v0.2.0
+│   │   └── stable_deref_trait v1.2.1
+│   ├── embedded-hal v0.2.7 (*)
+│   ├── embedded-hal v1.0.0 (*)
+│   ├── embedded-hal-async v1.0.0 (*)
+│   ├── embedded-hal-nb v1.0.0
+│   │   ├── embedded-hal v1.0.0 (*)
+│   │   └── nb v1.1.0
+│   ├── embedded-io v0.7.1
+│   ├── frunk v0.4.4
+│   │   ├── frunk_core v0.4.4
+│   │   └── frunk_derives v0.4.4 (proc-macro)
+│   │       ├── frunk_proc_macro_helpers v0.1.4
+│   │       │   ├── frunk_core v0.4.4
+│   │       │   ├── proc-macro2 v1.0.106 (*)
+│   │       │   ├── quote v1.0.44 (*)
+│   │       │   └── syn v2.0.114 (*)
+│   │       ├── quote v1.0.44 (*)
+│   │       └── syn v2.0.114 (*)
+│   ├── fugit v0.3.9
+│   │   └── gcd v2.3.0
+│   ├── itertools v0.10.5
+│   │   └── either v1.15.0
+│   ├── nb v1.1.0
+│   ├── paste v1.0.15 (proc-macro)
+│   ├── pio v0.3.0 (*)
+│   ├── rand_core v0.9.5
+│   ├── rp-binary-info v0.1.2
+│   ├── rp-hal-common v0.1.0
+│   │   └── fugit v0.3.9 (*)
+│   ├── rp2040-hal-macros v0.1.0 (proc-macro)
+│   │   ├── cortex-m-rt v0.7.5
+│   │   │   └── cortex-m-rt-macros v0.7.5 (proc-macro) (*)
+│   │   ├── proc-macro2 v1.0.106 (*)
+│   │   ├── quote v1.0.44 (*)
+│   │   └── syn v1.0.109 (*)
+│   ├── rp2040-pac v0.6.0
+│   │   ├── cortex-m v0.7.7 (*)
+│   │   ├── cortex-m-rt v0.7.5 (*)
+│   │   ├── critical-section v1.2.0
+│   │   └── vcell v0.1.3
+│   ├── rtic-monotonic v1.0.0
+│   ├── usb-device v0.3.2
+│   │   ├── heapless v0.8.0
+│   │   │   ├── hash32 v0.3.1
+│   │   │   │   └── byteorder v1.5.0
+│   │   │   └── stable_deref_trait v1.2.1
+│   │   └── portable-atomic v1.13.0 (*)
+│   ├── vcell v0.1.3
+│   └── void v1.0.2
+├── static_cell v2.1.1
+│   └── portable-atomic v1.13.0 (*)
+├── usb-device v0.2.9
+└── usbd-serial v0.1.1
+    ├── embedded-hal v0.2.7 (*)
+    ├── nb v0.1.3 (*)
+    └── usb-device v0.2.9
