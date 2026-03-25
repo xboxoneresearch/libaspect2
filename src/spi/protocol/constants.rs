@@ -102,6 +102,7 @@ impl Register {
     /// Create from raw address value
     pub fn from_address(addr: u8) -> Option<Self> {
         match addr {
+            0x01 => Some(Self::BlockSizeCount),
             0x02 => Some(Self::Argument),
             0x03 => Some(Self::CommandAndTransferMode),
             0x04 => Some(Self::Response0And1),
@@ -110,11 +111,17 @@ impl Register {
             0x07 => Some(Self::Response6And7),
             0x08 => Some(Self::DataFifo),
             0x09 => Some(Self::PresentState),
+            0x0A => Some(Self::HostControl),
             0x0B => Some(Self::Command),
             0x0C => Some(Self::InterruptStatus),
             0x0D => Some(Self::InterruptStatusEn),
             0x0E => Some(Self::InterruptSignalEn),
+            0x0F => Some(Self::AutoCmdHost2),
             0x44 => Some(Self::InitCommand),
+            0x86 => Some(Self::VendorTuning),
+            0x88 => Some(Self::XipOutputDelay),
+            0xC0 => Some(Self::XipDataFirst),
+            0xCD => Some(Self::XipDataLast),
             _ => None,
         }
     }
