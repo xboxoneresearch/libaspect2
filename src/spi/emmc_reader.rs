@@ -192,22 +192,22 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     /// Program the SDHCI clock divider for a target frequency.
     fn set_clock(&mut self, freq_mhz: f64) -> Result<(), Error> {
         // Enable internal clock (bit 0)
-        self.modify_reg(Register::Command, 1, 0)?;
+        self.modify_reg(Register::ClockControl, 1, 0)?;
 
         // Wait for Internal Clock Stable (bit 1)
-        self.poll_bit(Register::Command, 1, true, false, Some(1000))?;
+        self.poll_bit(Register::ClockControl, 1, true, false, Some(1000))?;
 
         // Disable SD Clock Output (bit 2) while reprogramming
-        self.modify_reg(Register::Command, 0, 4)?;
+        self.modify_reg(Register::ClockControl, 0, 4)?;
 
         // 10-bit divider: freq = base / (2 * divider)
         let divider = (BASE_CLOCK_MHZ / (2.0 * freq_mhz) + 0.5) as u16;
-        let clk = self.read_reg(Register::Command)?;
+        let clk = self.read_reg(Register::ClockControl)?;
         let low = (divider << 8) | (clk as u16 & 0x3F) | ((divider >> 2) & 0xC0);
-        self.write_reg(Register::Command, (clk & 0xFFFF_0000) | low as u32)?;
+        self.write_reg(Register::ClockControl, (clk & 0xFFFF_0000) | low as u32)?;
 
         // Re-enable SD Clock Output (bit 2)
-        self.modify_reg(Register::Command, 4, 0)?;
+        self.modify_reg(Register::ClockControl, 4, 0)?;
         self.clock_mhz = freq_mhz;
         Ok(())
     }
@@ -233,7 +233,7 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         self.command(CMD0, 0)?;
 
         // Set data timeout counter (bits [19:17])
-        self.modify_reg(Register::Command, 0x000E_0000, 0)?;
+        self.modify_reg(Register::ClockControl, 0x000E_0000, 0)?;
 
         // CMD1 loop — wait for card ready (bit 31 of OCR)
         loop {
@@ -698,8 +698,8 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         self.clear_interrupts()?;
         let c = make_cmd(12, if is_read { RESP_R1 } else { RESP_R1B });
         self.command(c, 0)?;
-        self.modify_reg(Register::Command, 0x0600_0000, 0)?;
-        self.poll_mask(Register::Command, 0x0600_0000, 0, false, Some(5000))
+        self.modify_reg(Register::ClockControl, 0x0600_0000, 0)?;
+        self.poll_mask(Register::ClockControl, 0x0600_0000, 0, false, Some(5000))
     }
 
     // -----------------------------------------------------------------------

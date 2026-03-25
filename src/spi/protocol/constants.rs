@@ -60,8 +60,8 @@ pub enum Register {
     PresentState = 0x09,
     /// Register 0x0A
     HostControl = 0x0A,
-    /// Command register (for issuing commands to eMMC) - also known as StatusConfig
-    Command = 0x0B,
+    /// Clock control
+    ClockControl = 0x0B,
     /// InterruptStatus
     InterruptStatus = 0x0C,
     /// Configuration register 1
@@ -112,7 +112,7 @@ impl Register {
             0x08 => Some(Self::DataFifo),
             0x09 => Some(Self::PresentState),
             0x0A => Some(Self::HostControl),
-            0x0B => Some(Self::Command),
+            0x0B => Some(Self::ClockControl),
             0x0C => Some(Self::InterruptStatus),
             0x0D => Some(Self::InterruptStatusEn),
             0x0E => Some(Self::InterruptSignalEn),
