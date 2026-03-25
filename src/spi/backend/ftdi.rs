@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use super::{GpioControl, SpiBackend};
 use crate::error::Error;
-use crate::spi::protocol::commands::{Command, Register};
+use crate::spi::protocol::commands::{TransferOp, Register};
 
 /*
 Pin assignments on FTDI FT4232H:
@@ -132,8 +132,8 @@ impl SpiBackend for FtdiBackend {
             // Send command bits (2 bits: WRITE = 0x2)
             .clock_bits_out(
                 libftd2xx::ClockBitsOut::LsbNeg,
-                Command::Write.bits(),
-                Command::bit_length(),
+                TransferOp::Write.bits(),
+                TransferOp::bit_length(),
             )
             // Send register address (8 bits)
             .clock_bits_out(
@@ -159,8 +159,8 @@ impl SpiBackend for FtdiBackend {
             // Send command bits (2 bits: READ = 0x1)
             .clock_bits_out(
                 libftd2xx::ClockBitsOut::LsbNeg,
-                Command::Read.bits(),
-                Command::bit_length(),
+                TransferOp::Read.bits(),
+                TransferOp::bit_length(),
             )
             // Send register address (8 bits)
             .clock_bits_out(
@@ -199,8 +199,8 @@ impl SpiBackend for FtdiBackend {
             // Send command bits (2 bits: READ = 0x1)
             .clock_bits_out(
                 libftd2xx::ClockBitsOut::LsbNeg,
-                Command::Read.bits(),
-                Command::bit_length(),
+                TransferOp::Read.bits(),
+                TransferOp::bit_length(),
             )
             // Send register address (8 bits)
             .clock_bits_out(

@@ -4,14 +4,14 @@ use crate::prelude::*;
 /// SPI Command type (2 bits)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum Command {
+pub enum TransferOp {
     /// Read operation (0b01)
     Read = 0x1,
     /// Write operation (0b10)
     Write = 0x2,
 }
 
-impl Command {
+impl TransferOp {
     /// Get the 2-bit command value
     pub fn bits(self) -> u8 {
         self as u8
@@ -225,10 +225,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_command_bits() {
-        assert_eq!(Command::Read.bits(), 0x1);
-        assert_eq!(Command::Write.bits(), 0x2);
-        assert_eq!(Command::bit_length(), 2);
+    fn test_transferop_bits() {
+        assert_eq!(TransferOp::Read.bits(), 0x1);
+        assert_eq!(TransferOp::Write.bits(), 0x2);
+        assert_eq!(TransferOp::bit_length(), 2);
     }
 
     #[test]

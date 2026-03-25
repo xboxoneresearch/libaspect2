@@ -1,4 +1,4 @@
-use super::commands::{Command, DataSize, Register};
+use super::commands::{TransferOp, DataSize, Register};
 /// Transaction types and builders for eMMC SPI protocol
 use crate::prelude::*;
 
@@ -30,10 +30,10 @@ impl TransactionType {
     }
 
     /// Get the command type for this transaction
-    pub fn command(&self) -> Command {
+    pub fn transfer_op(&self) -> TransferOp {
         match self {
-            Self::Write { .. } => Command::Write,
-            Self::Read { .. } | Self::ReadData { .. } => Command::Read,
+            Self::Write { .. } => TransferOp::Write,
+            Self::Read { .. } | Self::ReadData { .. } => TransferOp::Read,
         }
     }
 
@@ -91,7 +91,7 @@ mod tests {
     #[test]
     fn test_write_transaction() {
         let txn = Transaction::write(Register::Argument, 0x12345678);
-        assert_eq!(txn.command(), Command::Write);
+        assert_eq!(txn.transfer_op(), TransferOp::Write);
         assert_eq!(txn.register(), Register::Argument);
         assert_eq!(txn.write_data(), Some(0x12345678));
         assert_eq!(txn.response_size(), None);
@@ -100,7 +100,7 @@ mod tests {
     #[test]
     fn test_read_transaction() {
         let txn = Transaction::read(Register::PresentState);
-        assert_eq!(txn.command(), Command::Read);
+        assert_eq!(txn.transfer_op(), TransferOp::Read);
         assert_eq!(txn.register(), Register::PresentState);
         assert_eq!(txn.write_data(), None);
         assert_eq!(txn.response_size(), Some(DataSize::Register));
@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn test_read_data_transaction() {
         let txn = Transaction::read_data(Register::Argument);
-        assert_eq!(txn.command(), Command::Read);
+        assert_eq!(txn.transfer_op(), TransferOp::Read);
         assert_eq!(txn.register(), Register::Argument);
         assert_eq!(txn.write_data(), None);
         assert_eq!(txn.response_size(), Some(DataSize::Page));
