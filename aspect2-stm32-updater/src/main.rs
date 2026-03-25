@@ -231,7 +231,7 @@ fn main() -> Result<()> {
             );
             println!("[*] Start page: {start_page}, count: {page_count}");
 
-            if filebuf.len() != size {
+            if filebuf.len() != size as usize {
                 return Err(anyhow!(
                     "Expected firmware size {:#08X}, got: {:#08X}",
                     size,

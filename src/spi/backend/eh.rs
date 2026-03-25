@@ -5,10 +5,10 @@
 
 use embedded_hal::{delay::DelayNs, digital::OutputPin, spi::SpiDevice};
 
-use crate::prelude::*;
 use super::{GpioControl, SpiBackend};
 use crate::error::Error;
-use crate::spi::protocol::commands::{Command, Register};
+use crate::prelude::*;
+use crate::spi::protocol::constants::{Register, TransferOp};
 
 /// embedded-hal 1.0 SPI Backend
 ///
@@ -96,7 +96,7 @@ where
     fn write_register<T: Into<u8>>(&mut self, register: T, data: u32) -> Result<(), Error> {
         let mut frame = [0u8; 6];
 
-        frame[0] = Command::Write.bits();
+        frame[0] = TransferOp::Write.bits();
         frame[1] = register.into();
         frame[2..6].copy_from_slice(&data.to_le_bytes());
 
@@ -106,7 +106,7 @@ where
     }
 
     fn read_register<T: Into<u8>>(&mut self, register: T) -> Result<u32, Error> {
-        let tx = [Command::Read.bits(), register.into()];
+        let tx = [TransferOp::Read.bits(), register.into()];
         let mut rx = [0u8; 4];
 
         self.spi.write(&tx).map_err(|_| Error::SpiError)?;
@@ -120,7 +120,7 @@ where
     }
 
     fn read_data<T: Into<u8>>(&mut self, register: T, buffer: &mut [u8]) -> Result<(), Error> {
-        let tx = [Command::Read.bits(), register.into()];
+        let tx = [TransferOp::Read.bits(), register.into()];
 
         self.spi.write(&tx).map_err(|_| Error::SpiError)?;
 

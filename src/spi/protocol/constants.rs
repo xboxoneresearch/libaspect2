@@ -1,17 +1,22 @@
 /// Command and register definitions for eMMC SPI protocol
 use crate::prelude::*;
 
+pub const RCA: u32 = 10;
+pub const RCA_ARG: u32 = RCA << 16;
+pub const BLOCK_SIZE: u32 = 512;
+pub const BASE_CLOCK_MHZ: f64 = 196.875;
+
 /// SPI Command type (2 bits)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum Command {
+pub enum TransferOp {
     /// Read operation (0b01)
     Read = 0x1,
     /// Write operation (0b10)
     Write = 0x2,
 }
 
-impl Command {
+impl TransferOp {
     /// Get the 2-bit command value
     pub fn bits(self) -> u8 {
         self as u8
@@ -24,55 +29,56 @@ impl Command {
 }
 
 /// eMMC SPI Controller Register addresses (8 bits)
+//
+//   0x01 → Block Size / Block Count         0x09 → Present State
+//   0x02 → Argument                         0x0A → Host Control 1
+//   0x03 → Transfer Mode + Command          0x0B → Clock Control
+//   0x04 → Response [31:0]                  0x0C → Interrupt Status
+//   0x05 → Response [63:32]                 0x0D → Int Status Enable
+//   0x06 → Response [95:64]                 0x0E → Int Signal Enable
+//   0x07 → Response [127:96]                0x0F → Auto CMD / Host Ctrl 2
+//   0x08 → Data FIFO
+//
+// Vendor: 0x86 = tuning trigger, 0x88 = XIP output delay
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Register {
     /// Register 0x01
-    Reg_01 = 0x01,
-
+    BlockSizeCount = 0x01,
     /// Argument register - buffer/FIFO config
     Argument = 0x02,
-
     /// Command and Transfer Mode register
     CommandAndTransferMode = 0x03,
-
-    /// Response/Status register 0 (also used for status polling)
+    /// Response/Status register (also used for status polling)
     Response0And1 = 0x04,
     Response2And3 = 0x05,
     Response4And5 = 0x06,
     Response6And7 = 0x07,
-
     /// Data FIFO register (for 512-byte block reads)
     DataFifo = 0x08,
-
     /// Present State register
     PresentState = 0x09,
-
     /// Register 0x0A
-    Reg_0A = 0x0A,
-
-    /// Command register (for issuing commands to eMMC) - also known as StatusConfig
-    Command = 0x0B,
-
+    HostControl = 0x0A,
+    /// Clock control
+    ClockControl = 0x0B,
     /// InterruptStatus
     InterruptStatus = 0x0C,
-
     /// Configuration register 1
-    Config1 = 0x0D,
-
+    InterruptStatusEn = 0x0D,
     /// Configuration register 2
-    Config2 = 0x0E,
-
+    InterruptSignalEn = 0x0E,
     /// Register 0x0F
-    Reg_0F = 0x0F,
-
+    AutoCmdHost2 = 0x0F,
     /// Initialization command register
     InitCommand = 0x44,
-
+    /// Vendor tuning
+    VendorTuning = 0x86,
     /// Register 0x88
     XipOutputDelay = 0x88,
-
+    // Xip Data, first register
     XipDataFirst = 0xC0,
+    // Xip Data, last register
     XipDataLast = 0xCD,
 }
 
@@ -96,6 +102,7 @@ impl Register {
     /// Create from raw address value
     pub fn from_address(addr: u8) -> Option<Self> {
         match addr {
+            0x01 => Some(Self::BlockSizeCount),
             0x02 => Some(Self::Argument),
             0x03 => Some(Self::CommandAndTransferMode),
             0x04 => Some(Self::Response0And1),
@@ -104,14 +111,72 @@ impl Register {
             0x07 => Some(Self::Response6And7),
             0x08 => Some(Self::DataFifo),
             0x09 => Some(Self::PresentState),
-            0x0B => Some(Self::Command),
+            0x0A => Some(Self::HostControl),
+            0x0B => Some(Self::ClockControl),
             0x0C => Some(Self::InterruptStatus),
-            0x0D => Some(Self::Config1),
-            0x0E => Some(Self::Config2),
+            0x0D => Some(Self::InterruptStatusEn),
+            0x0E => Some(Self::InterruptSignalEn),
+            0x0F => Some(Self::AutoCmdHost2),
             0x44 => Some(Self::InitCommand),
+            0x86 => Some(Self::VendorTuning),
+            0x88 => Some(Self::XipOutputDelay),
+            0xC0 => Some(Self::XipDataFirst),
+            0xCD => Some(Self::XipDataLast),
             _ => None,
         }
     }
+}
+
+pub mod responses {
+    pub const RESP_NONE: u8 = 0x00;
+    pub const RESP_R2: u8 = 0x09; // 136-bit
+    pub const RESP_R3: u8 = 0x02; // 48-bit, no CRC/Index
+    pub const RESP_R1: u8 = 0x1A; // 48-bit, CRC+Index
+    pub const RESP_R1B: u8 = 0x1B; // 48-bit, CRC+Index, busy
+}
+
+/// MMC command encoding
+///
+/// Packed u32: upper 16 = Command Register, lower 16 = Transfer Mode.
+///   Command Register: [13:8] index, [5] data-present, [4] index-check,
+///                     [3] CRC-check, [1:0] response type
+pub const fn make_cmd(index: u8, resp: u8) -> u32 {
+    ((index as u32) << 24) | ((resp as u32) << 16)
+}
+
+pub mod commands {
+    use super::{make_cmd, responses::*};
+
+    // Non-data commands
+    pub const CMD0: u32 = make_cmd(0, RESP_NONE); // GO_IDLE
+    pub const CMD1: u32 = make_cmd(1, RESP_R3); // SEND_OP_COND
+    pub const CMD2: u32 = make_cmd(2, RESP_R2); // ALL_SEND_CID
+    pub const CMD3: u32 = make_cmd(3, RESP_R1); // SET_RCA
+    pub const CMD6: u32 = make_cmd(6, RESP_R1B); // SWITCH
+    pub const CMD7_SEL: u32 = make_cmd(7, RESP_R1); // SELECT_CARD
+    pub const CMD7_DESEL: u32 = make_cmd(7, 0x18); // DESELECT_CARD
+    pub const CMD13: u32 = make_cmd(13, RESP_R1); // SEND_STATUS
+    pub const CMD16: u32 = make_cmd(16, RESP_R1); // SET_BLOCKLEN
+    pub const CMD35: u32 = make_cmd(35, RESP_R1); // ERASE_GROUP_START
+    pub const CMD36: u32 = make_cmd(36, RESP_R1); // ERASE_GROUP_END
+    pub const CMD38: u32 = make_cmd(38, RESP_R1); // ERASE
+
+    // Data transfer commands: CMD Register (upper 16) | Transfer Mode (lower 16)
+    //   Transfer Mode bits: [5] multi-block, [4] read-direction, [2] auto-CMD12,
+    //                       [1] block-count-enable
+    pub const CMD8_EXT_CSD: u32 = 0x083A_0010; // SEND_EXT_CSD (single read)
+    pub const CMD17_READ: u32 = 0x113A_0010; // READ_SINGLE_BLOCK
+    pub const CMD18_READ: u32 = 0x123A_0036; // READ_MULTIPLE_BLOCK
+    pub const CMD24_WRITE: u32 = 0x183A_0000; // WRITE_BLOCK
+    pub const CMD25_WRITE: u32 = 0x193A_0026; // WRITE_MULTIPLE_BLOCK
+}
+
+/// Erase type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EraseType {
+    Erase = 0,
+    Trim = 1,
+    Discard = 3,
 }
 
 /// Data size for register operations
@@ -216,15 +281,18 @@ pub mod transfer_config {
     pub const PAGE_READ: u32 = 0x113A0010;
 }
 
+/// Interrupt Error flag
+pub const ERROR_INTERRUPT: u32 = 1 << 15;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_command_bits() {
-        assert_eq!(Command::Read.bits(), 0x1);
-        assert_eq!(Command::Write.bits(), 0x2);
-        assert_eq!(Command::bit_length(), 2);
+    fn test_transferop_bits() {
+        assert_eq!(TransferOp::Read.bits(), 0x1);
+        assert_eq!(TransferOp::Write.bits(), 0x2);
+        assert_eq!(TransferOp::bit_length(), 2);
     }
 
     #[test]

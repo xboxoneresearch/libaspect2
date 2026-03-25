@@ -1,26 +1,29 @@
-/// High-level eMMC SPI Reader
-///
-/// This module provides a clean, high-level API for reading from the eMMC chip,
-/// using the backend abstraction to work with any SPI implementation.
-use super::backend::SpiBackend;
-use super::protocol::commands::{Register, status, transfer_config};
-use crate::prelude::*;
-use crate::error::Error;
-use crate::DelayTrait;
+//! Arasan eMMC Controller over SPI
+//!
+//! Full MMC initialization and data transfer using the SpiBackend transport.
+//! Register indices correspond directly to SpiBackend register addresses.
 
-//Development Mode, SMCFWKey:Devkit
+use super::backend::SpiBackend;
+use super::protocol::constants::{
+    BASE_CLOCK_MHZ, BLOCK_SIZE, ERROR_INTERRUPT, EraseType, RCA_ARG, Register, commands::*,
+    make_cmd, responses::*, status, transfer_config,
+};
+use crate::error::Error;
+use crate::prelude::*;
+
+// ---------------------------------------------------------------------------
+// SMC fuse hashes (Xbox debug probe)
+// ---------------------------------------------------------------------------
+
 const B1SMCBL_HASH_DEVKIT: [u8; 16] = hex_literal::hex!("C0DE15B90000FFFFA5A55A5A1234FEDC");
-//# Production Mode, SMCFWKey:rtlA
 const B1SMCBL_HASH_RTL_A: [u8; 16] = hex_literal::hex!("2C0278DBD3716D1996C5E5A4560B3F6A");
-// # Production Mode, SMCFWKey:rtlB
 const B1SMCBL_HASH_RTL_B: [u8; 16] = hex_literal::hex!("40427E9153E88CA7B2BD3812FEB69B65");
-// # Production Mode, SMCFWKey:rtlC
 const B1SMCBL_HASH_RTL_C: [u8; 16] = hex_literal::hex!("A3192969B3B3068F1246B9B4EF18E99E");
-// # Production Mode, SMCFWKey:rtlD
 const B1SMCBL_HASH_RTL_D: [u8; 16] = hex_literal::hex!("DF219ABE760F9B32BCBE86C254010F52");
 
 #[derive(Debug)]
-pub struct SMC_FUSES {
+#[allow(non_snake_case, dead_code)]
+pub struct SmcFuses {
     ECID: [u8; 8],
     Exp1SMCBLDigest: [u8; 16],
     RsvdPublic: [u8; 8],
@@ -30,7 +33,7 @@ pub struct SMC_FUSES {
 }
 
 #[cfg(feature = "std")]
-impl std::fmt::Display for SMC_FUSES {
+impl std::fmt::Display for SmcFuses {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let smc_flavor = match self.Exp1SMCBLDigest {
             B1SMCBL_HASH_DEVKIT => "Development Mode, SMCFWKey:Devkit".to_string(),
@@ -40,68 +43,678 @@ impl std::fmt::Display for SMC_FUSES {
             B1SMCBL_HASH_RTL_D => "Production Mode, SMCFWKey:rtlD".to_string(),
             _ => format!("!UNKNOWN! ({})", hex::encode(self.Exp1SMCBLDigest)),
         };
-
         writeln!(f, "ECID: {}", hex::encode(self.ECID))?;
         writeln!(f, "Exp1SMCBLDigest: {smc_flavor}")?;
         writeln!(f, "RsvdPublic: {}", hex::encode(self.RsvdPublic))?;
         writeln!(f, "RsvdPrivate: {}", hex::encode(self.RsvdPrivate))?;
         writeln!(f, "ChipID: {}", hex::encode(self.ChipID))?;
-        writeln!(f, "SB Rev: {}", hex::encode(self.SbRev))?;
-        Ok(())
+        writeln!(f, "SB Rev: {}", hex::encode(self.SbRev))
     }
 }
 
-/// eMMC SPI Reader - works with any backend
-pub struct EmmcReader<B: SpiBackend, D: DelayTrait> {
+/// EmmcReader — the controller
+pub struct EmmcReader<B: SpiBackend, C: ClockTrait + DelayNs + Clone> {
     pub backend: B,
+    internal_clock: C,
     initialized: bool,
-    delay: D,
+    block_size: u32,
+    clock_mhz: f64,
+    cid: [u32; 4],
 }
 
-impl<B: SpiBackend, D: DelayTrait> EmmcReader<B, D> {
+impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     /// Create a new reader with the specified backend
-    pub fn new(backend: B, delay_impl: D) -> Self {
+    pub fn new(backend: B, clock_impl: C) -> Self {
         Self {
             backend,
+            internal_clock: clock_impl,
             initialized: false,
-            delay: delay_impl,
+            block_size: 0,
+            clock_mhz: 0.0,
+            cid: [0; 4],
         }
     }
 
-    fn open(&mut self) {}
-    fn close(&mut self) {}
-    fn controller_init(&mut self) {}
-    fn initialize_controller_clock(&mut self) {}
-    fn mmc_init(&mut self) {}
-    fn mmc_enter_standby_mode(&mut self) {}
-    fn mmc_select_card(&mut self) {}
-    fn mmc_command(&mut self) {}
-    fn mmc_get_cid(&mut self) {}
-    fn mmc_read_extended_csd(&mut self) {}
-    fn mmc_set_block_size(&mut self, block_size: u32) {}
-    fn mmc_set_block_count(&mut self, block_count: u32) {}
-    fn mmc_tuning_procedure(&mut self) {}
-    fn mmc_erase_sequence(&mut self) {}
-    fn mmc_partition(&mut self) {}
-    fn mmc_poll_status_bit(&mut self, bit: u32) {}
-    fn mmc_poll_status_bitmask(&mut self, mask: u32) {}
-    fn mmc_register_print(&mut self) {}
-    fn mmc_sanitize(&mut self) {}
-    fn mmc_send_status(&mut self) {}
-    fn clear_interrupt_status(&mut self) {}
+    pub fn is_initialized(&self) -> bool {
+        self.initialized
+    }
 
-    fn set_output_delay(&mut self, delay: u32) {}
+    pub fn cid(&self) -> &[u32; 4] {
+        &self.cid
+    }
 
     fn decode_response_r1x(&mut self) {}
-    pub fn dump_fuses(&mut self) -> Result<SMC_FUSES, Error> {
+
+    // -----------------------------------------------------------------------
+    // Register helpers
+    // -----------------------------------------------------------------------
+
+    fn read_reg(&mut self, r: Register) -> Result<u32, Error> {
+        self.backend.read_register(r)
+    }
+
+    fn write_reg(&mut self, r: Register, v: u32) -> Result<(), Error> {
+        self.backend.write_register(r, v)
+    }
+
+    fn modify_reg(&mut self, r: Register, set: u32, clear: u32) -> Result<(), Error> {
+        let v = self.read_reg(r)?;
+        self.write_reg(r, (v & !clear) | set)
+    }
+
+    // -----------------------------------------------------------------------
+    // MMC command interface
+    // -----------------------------------------------------------------------
+
+    /// Issue a non-data MMC command and wait for completion.
+    fn command(&mut self, cmd_word: u32, argument: u32) -> Result<(), Error> {
+        self.write_reg(Register::Argument, argument)?;
+        self.write_reg(Register::CommandAndTransferMode, cmd_word)?;
+
+        // Wait for Command Complete (bit 0)
+        self.poll_bit(Register::InterruptStatus, 0, true, true, None)?;
+
+        // Handle response type (bits [17:16] of packed word)
+        match (cmd_word >> 16) & 3 {
+            0..=2 => {} // none / R2 / R1
+            3 => {
+                // R1b — also wait for Transfer Complete (bit 1)
+                let _ = self.poll_bit(Register::InterruptStatus, 1, true, true, Some(5000));
+            }
+            _ => return Err(Error::RegisterAccessFailed),
+        }
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Status polling
+    // -----------------------------------------------------------------------
+
+    /// Poll until `(reg_value & mask) == expected`. Returns error on timeout
+    /// or if the error-interrupt bit is set (when polling INT_STATUS).
+    fn poll_mask(
+        &mut self,
+        register: Register,
+        mask: u32,
+        expected: u32,
+        clear: bool,
+        timeout: Option<u32>,
+    ) -> Result<(), Error> {
+        let clock_clone = self.internal_clock.clone();
+        let mut t = Timer::new(&clock_clone);
+        let maybe_timer = timeout.map(|val| {
+            t.start(Duration::from_millis(val.into()));
+            t
+        });
+
+        loop {
+            let val = self.read_reg(register)?;
+
+            if register == Register::InterruptStatus && val & ERROR_INTERRUPT != 0 {
+                // Clear the error so we don't loop on it
+                let _ = self.write_reg(Register::InterruptStatus, val);
+                return Err(Error::MmcHardwareError { status: val });
+            }
+            if val & mask == expected & mask {
+                if clear {
+                    self.write_reg(register, mask)?;
+                }
+                return Ok(());
+            }
+            if let Some(timer) = &maybe_timer
+                && timer.is_expired().unwrap()
+            {
+                return Err(Error::Timeout);
+            }
+        }
+    }
+
+    fn poll_bit(
+        &mut self,
+        register: Register,
+        bit: u8,
+        set: bool,
+        clear: bool,
+        timeout: Option<u32>,
+    ) -> Result<(), Error> {
+        let mask = 1u32 << bit;
+        self.poll_mask(register, mask, if set { mask } else { 0 }, clear, timeout)
+    }
+
+    fn clear_interrupts(&mut self) -> Result<(), Error> {
+        self.write_reg(Register::InterruptStatus, 0xFFFF_FFFF)
+    }
+
+    // -----------------------------------------------------------------------
+    // Clock control
+    // -----------------------------------------------------------------------
+
+    /// Program the clock divider for a target frequency.
+    fn set_clock(&mut self, freq_mhz: f64) -> Result<(), Error> {
+        // Enable internal clock (bit 0)
+        self.modify_reg(Register::ClockControl, 1, 0)?;
+
+        // Wait for Internal Clock Stable (bit 1)
+        self.poll_bit(Register::ClockControl, 1, true, false, Some(1000))?;
+
+        // Disable SD Clock Output (bit 2) while reprogramming
+        self.modify_reg(Register::ClockControl, 0, 4)?;
+
+        // 10-bit divider: freq = base / (2 * divider)
+        let divider = (BASE_CLOCK_MHZ / (2.0 * freq_mhz) + 0.5) as u16;
+        let clk = self.read_reg(Register::ClockControl)?;
+        let low = (divider << 8) | (clk as u16 & 0x3F) | ((divider >> 2) & 0xC0);
+        self.write_reg(Register::ClockControl, (clk & 0xFFFF_0000) | low as u32)?;
+
+        // Re-enable SD Clock Output (bit 2)
+        self.modify_reg(Register::ClockControl, 4, 0)?;
+        self.clock_mhz = freq_mhz;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Interrupt enables
+    // -----------------------------------------------------------------------
+
+    fn enable_interrupts(&mut self) -> Result<(), Error> {
+        // INT_STATUS_EN: enable Command Complete, Transfer Complete,
+        // Buffer Write/Read Ready, and all error interrupts
+        self.write_reg(Register::InterruptStatusEn, 0x1FFF_0033)?;
+        self.write_reg(Register::InterruptSignalEn, 0x17FF_0033)?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Card lifecycle
+    // -----------------------------------------------------------------------
+
+    /// CMD0 → CMD1 loop → CMD2 → CMD3: bring card from Idle to Standby.
+    fn enter_standby(&mut self) -> Result<(), Error> {
+        self.command(CMD0, 0)?;
+
+        // Set data timeout counter (bits [19:17])
+        self.modify_reg(Register::ClockControl, 0x000E_0000, 0)?;
+
+        // CMD1 loop — wait for card ready (bit 31 of OCR)
+        loop {
+            self.command(CMD1, 0x4000_0100)?;
+            if self.read_reg(Register::Response0And1)? & 0x8000_0000 != 0 {
+                break;
+            }
+        }
+
+        // CMD2 — read CID
+        self.command(CMD2, 0)?;
+        self.cid = [
+            self.read_reg(Register::Response0And1)?,
+            self.read_reg(Register::Response2And3)?,
+            self.read_reg(Register::Response4And5)?,
+            self.read_reg(Register::Response6And7)?,
+        ];
+
+        // CMD3 — assign RCA
+        self.command(CMD3, RCA_ARG)
+    }
+
+    fn select_card(&mut self, select: bool) -> Result<(), Error> {
+        if select {
+            self.command(CMD7_SEL, RCA_ARG)
+        } else {
+            self.command(CMD7_DESEL, 0)
+        }
+    }
+
+    fn set_block_size(&mut self, size: u32) -> Result<(), Error> {
+        self.command(CMD16, size & 0xFFF)?;
+        self.block_size = size;
+        Ok(())
+    }
+
+    fn set_block_count(&mut self, count: u16) -> Result<(), Error> {
+        self.write_reg(
+            Register::BlockSizeCount,
+            ((count as u32) << 16) | (self.block_size & 0xFFF),
+        )
+    }
+
+    fn send_status(&mut self) -> Result<(), Error> {
+        self.command(CMD13, RCA_ARG)
+    }
+
+    fn set_xip_output_delay(&mut self, value: u32) -> Result<(), Error> {
+        self.write_reg(Register::XipOutputDelay, value)
+    }
+
+    // -----------------------------------------------------------------------
+    // High-speed / HS200 configuration
+    // -----------------------------------------------------------------------
+
+    fn configure_high_speed(&mut self, freq_mhz: f64) -> Result<(), Error> {
+        if freq_mhz > 25.0 {
+            // 1.8V signalling (bit 19 in Host Control 2)
+            self.modify_reg(Register::AutoCmdHost2, 0x0008_0000, 0)?;
+            // High-Speed Enable (bit 2 of Host Control)
+            self.modify_reg(Register::HostControl, 4, 0)?;
+            let xip = if freq_mhz > 52.0 { 0 } else { 0x0007_0001 };
+            self.set_xip_output_delay(xip)?;
+        }
+        self.set_clock(freq_mhz)?;
+        if freq_mhz > 52.0 {
+            self.tuning()?;
+        }
+        Ok(())
+    }
+
+    /// Full card init: identification → select → switch timing → high-speed clock.
+    fn mmc_init(&mut self, freq_mhz: f64) -> Result<(), Error> {
+        self.clear_interrupts()?;
+
+        self.enter_standby()?;
+        self.select_card(true)?;
+
+        // CMD6 SWITCH: HS_TIMING = 1 initially
+        self.command(CMD6, 0x03B9_0100)?;
+
+        // CMD6 SWITCH: BUS_WIDTH = 8-bit (EXT_CSD[183] = 2)
+        // Must tell the card BEFORE switching host controller bus width
+        self.command(CMD6, 0x03B7_0200)?;
+
+        // 8-bit bus width on host side: clear bits [5:3], set bit 5
+        let hc = (self.read_reg(Register::HostControl)? & !0x38) | 0x20;
+        self.write_reg(Register::HostControl, hc)?;
+
+        self.set_block_size(BLOCK_SIZE)?;
+
+        let freq = if freq_mhz > 0.0 {
+            freq_mhz
+        } else {
+            self.clock_mhz
+        };
+        self.clock_mhz = freq;
+
+        // Select timing mode by target speed
+        let timing = if freq > 52.0 {
+            0x03B9_0200 // HS200
+        } else if freq > 25.0 {
+            0x03B9_0100 // High Speed
+        } else {
+            0x03B9_0000 // Legacy
+        };
+        self.command(CMD6, timing)?;
+
+        self.configure_high_speed(freq)
+    }
+
+    // -----------------------------------------------------------------------
+    // HS200 tuning
+    // -----------------------------------------------------------------------
+
+    fn tuning(&mut self) -> Result<(), Error> {
+        let saved_bs = self.block_size;
+        self.block_size = 128;
+
+        self.write_reg(Register::VendorTuning, 32)?;
+        // Execute Tuning (bit 22 in Host Control 2)
+        self.modify_reg(Register::AutoCmdHost2, 0x0040_0000, 0)?;
+
+        loop {
+            let mut buf = [0u8; 128];
+            self.backend.read_data(Register::DataFifo, &mut buf)?;
+
+            if self.read_reg(Register::AutoCmdHost2)? & 0x0040_0000 == 0 {
+                self.block_size = saved_bs;
+                return Ok(());
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Extended CSD
+    // -----------------------------------------------------------------------
+
+    pub fn read_ext_csd(&mut self, buf: &mut [u8; 512]) -> Result<(), Error> {
+        self.set_block_count(1)?;
+        self.clear_interrupts()?;
+
+        // CMD8 SEND_EXT_CSD (data read)
+        self.write_reg(Register::Argument, 0)?;
+        self.write_reg(Register::CommandAndTransferMode, CMD8_EXT_CSD)?;
+
+        // Wait for Command Complete
+        self.poll_bit(Register::InterruptStatus, 0, true, true, Some(1000))?;
+
+        // Wait for Buffer Read Ready (bit 5)
+        self.poll_bit(Register::InterruptStatus, 5, true, true, Some(1000))?;
+
+        // Read 512 bytes
+        buf.fill(0);
+        self.backend.read_data(Register::DataFifo, buf)?;
+
+        // Wait for Transfer Complete (bit 1)
+        self.poll_bit(Register::InterruptStatus, 1, true, true, Some(1000))?;
+
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Public API: initialization
+    // -----------------------------------------------------------------------
+
+    /// Full initialization: bridge setup → sanity check → card init.
+    ///
+    /// Initializes the card at ~50 MHz (high-speed mode). Use `init_at_freq`
+    /// for a different target clock.
+    pub fn init(&mut self) -> Result<(), Error> {
+        self.init_at_freq(50.0)
+    }
+
+    /// Initialize at a specific target clock frequency (MHz).
+    ///
+    /// * `<= 25.0` — Legacy mode
+    /// * `<= 52.0` — High-Speed mode
+    /// * `> 52.0`  — HS200 mode (with tuning)
+    pub fn init_at_freq(&mut self, freq_mhz: f64) -> Result<(), Error> {
+        if self.initialized {
+            return Ok(());
+        }
+
+        // Hardware init (GPIO, SPI, reset)
         self.backend.initialize()?;
 
-        // Write 0x00000003 to register 0x44
+        // Enable the SPI → eMMC bridge
         self.backend
-            .write_register(Register::InitCommand, 0x00000003)?;
+            .write_register(Register::InitCommand, 0x0000_0003)?;
+
+        // Wait for the bridge to come up (retries with backoff)
+        self.sanity_check()?;
+
+        // Ramp up SPI bus clock now that the link is verified
+        // FT2232H supports up to 30 MHz
+        self.backend.set_spi_clock(30000)?;
+
+        // Enable eMMC interrupts so polling works
+        self.enable_interrupts()?;
+
+        // Start with a slow identification clock (~400 kHz)
+        self.set_clock(0.4)?;
+
+        // Run full MMC init: standby → select → switch → high-speed clock
+        self.mmc_init(freq_mhz)?;
+
+        self.initialized = true;
+        Ok(())
+    }
+
+    /// Reinitialize the controller clock/bus without re-enumerating the card.
+    /// Use this after the card is already selected but you want a new speed.
+    pub fn controller_init(&mut self, freq_mhz: f64) -> Result<(), Error> {
+        let hc = (self.read_reg(Register::HostControl)? & !0x38) | 0x20;
+        self.write_reg(Register::HostControl, hc)?;
+        self.set_block_size(BLOCK_SIZE)?;
+
+        let freq = if freq_mhz > 0.0 {
+            freq_mhz
+        } else {
+            self.clock_mhz
+        };
+        self.clock_mhz = freq;
+        self.configure_high_speed(freq)
+    }
+
+    // -----------------------------------------------------------------------
+    // Sanity check
+    // -----------------------------------------------------------------------
+
+    fn sanity_check(&mut self) -> Result<(), Error> {
+        // The bridge may need time after reset/enable; retry with backoff.
+        for attempt in 0..10 {
+            if attempt > 0 {
+                self.internal_clock.delay_ms(50 * attempt as u32);
+            }
+            match self.try_sanity_check() {
+                Ok(()) => return Ok(()),
+                Err(_) if attempt < 9 => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!()
+    }
+
+    fn try_sanity_check(&mut self) -> Result<(), Error> {
+        for test_value in [0x1234_5678u32, 0xEDCB_A987, 0x1234_5678, 0xEDCB_A987] {
+            self.backend
+                .write_register(Register::Argument, test_value)?;
+            let readback = self.backend.read_register(Register::Argument)?;
+            if readback != test_value {
+                return Err(Error::SanityCheckFailed {
+                    expected: test_value,
+                    actual: readback,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Public API: read / write pages
+    // -----------------------------------------------------------------------
+
+    /// Read a single 512-byte block at the given LBA.
+    pub fn read_page(&mut self, lba: u32, buf: &mut [u8; 512]) -> Result<(), Error> {
+        self.set_block_count(1)?;
+        self.clear_interrupts()?;
+
+        // CMD17 READ_SINGLE_BLOCK
+        self.write_reg(Register::Argument, lba)?;
+        self.write_reg(Register::CommandAndTransferMode, CMD17_READ)?;
+
+        // Command Complete
+        self.poll_bit(Register::InterruptStatus, 0, true, true, Some(1000))?;
+
+        // Buffer Read Ready (bit 5)
+        self.poll_bit(Register::InterruptStatus, 5, true, true, Some(1000))?;
+
+        // Read 512 bytes from the data FIFO
+        self.backend.read_data(Register::DataFifo, buf)?;
+
+        // Transfer Complete (bit 1)
+        self.poll_bit(Register::InterruptStatus, 1, true, true, Some(1000))?;
+
+        Ok(())
+    }
+
+    /// Read multiple contiguous 512-byte blocks.
+    ///
+    /// `buf` must be at least `count * 512` bytes.
+    pub fn read_pages(&mut self, start_lba: u32, buf: &mut [u8], count: u32) -> Result<(), Error> {
+        if count == 0 {
+            return Ok(());
+        }
+        if count == 1 {
+            let page: &mut [u8; 512] = (&mut buf[..512]).try_into().unwrap();
+            return self.read_page(start_lba, page);
+        }
+
+        self.set_block_count(count as u16)?;
+        self.clear_interrupts()?;
+
+        // CMD18 READ_MULTIPLE_BLOCK
+        self.write_reg(Register::Argument, start_lba)?;
+        self.write_reg(Register::CommandAndTransferMode, CMD18_READ)?;
+
+        // Command Complete
+        self.poll_bit(Register::InterruptStatus, 0, true, true, Some(1000))?;
+
+        // PIO: one block at a time
+        for i in 0..count as usize {
+            // Buffer Read Ready (bit 5)
+            self.poll_bit(Register::InterruptStatus, 5, true, true, None)?;
+
+            let start = i * 512;
+            self.backend
+                .read_data(Register::DataFifo, &mut buf[start..start + 512])?;
+        }
+
+        // Transfer Complete (bit 1)
+        self.poll_bit(Register::InterruptStatus, 1, true, true, Some(5000))?;
+
+        Ok(())
+    }
+
+    /// Write a single 512-byte block at the given LBA.
+    pub fn write_page(&mut self, lba: u32, buf: &[u8; 512]) -> Result<(), Error> {
+        self.set_block_count(1)?;
+        self.clear_interrupts()?;
+
+        // CMD24 WRITE_BLOCK
+        self.write_reg(Register::Argument, lba)?;
+        self.write_reg(Register::CommandAndTransferMode, CMD24_WRITE)?;
+
+        // Command Complete
+        self.poll_bit(Register::InterruptStatus, 0, true, true, Some(1000))?;
+
+        // Buffer Write Ready (bit 4)
+        self.poll_bit(Register::InterruptStatus, 4, true, true, Some(1000))?;
+
+        // Write 512 bytes to the data FIFO
+        self.backend.write_data(Register::DataFifo, buf)?;
+
+        // Transfer Complete (bit 1)
+        self.poll_bit(Register::InterruptStatus, 1, true, true, Some(5000))?;
+
+        Ok(())
+    }
+
+    /// Write multiple contiguous 512-byte blocks.
+    ///
+    /// `buf` must be at least `count * 512` bytes.
+    pub fn write_pages(&mut self, start_lba: u32, buf: &[u8], count: u32) -> Result<(), Error> {
+        if count == 0 {
+            return Ok(());
+        }
+        if count == 1 {
+            let page: &[u8; 512] = buf[..512].try_into().unwrap();
+            return self.write_page(start_lba, page);
+        }
+
+        self.set_block_count(count as u16)?;
+        self.clear_interrupts()?;
+
+        // CMD25 WRITE_MULTIPLE_BLOCK
+        self.write_reg(Register::Argument, start_lba)?;
+        self.write_reg(Register::CommandAndTransferMode, CMD25_WRITE)?;
+
+        // Command Complete
+        self.poll_bit(Register::InterruptStatus, 0, true, true, Some(1000))?;
+
+        // PIO: one block at a time
+        for i in 0..count as usize {
+            // Buffer Write Ready (bit 4)
+            self.poll_bit(Register::InterruptStatus, 4, true, true, None)?;
+
+            let start = i * 512;
+            self.backend
+                .write_data(Register::DataFifo, &buf[start..start + 512])?;
+        }
+
+        // Transfer Complete (bit 1)
+        self.poll_bit(Register::InterruptStatus, 1, true, true, Some(5000))?;
+
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Erase / Trim / Discard
+    // -----------------------------------------------------------------------
+
+    pub fn erase(&mut self, kind: EraseType, start_byte: u64, length: u64) -> Result<(), Error> {
+        if start_byte & 0x1FF != 0 || length & 0x1FF != 0 {
+            return Err(Error::RegisterAccessFailed);
+        }
+        if length == 0 {
+            return Ok(());
+        }
+
+        let start_sec = (start_byte >> 9) as u32;
+        let end_sec = start_sec + (length >> 9) as u32;
+
+        self.set_block_size(BLOCK_SIZE)?;
+
+        let mut erase_group: u32 = 1;
+
+        if kind == EraseType::Erase {
+            let mut ecsd = [0u8; 512];
+            self.read_ext_csd(&mut ecsd)?;
+            erase_group = (ecsd[224] as u32) << 10;
+        } else if kind == EraseType::Trim {
+            let mut ecsd = [0u8; 512];
+            self.read_ext_csd(&mut ecsd)?;
+            if ecsd[231] & 0x10 == 0 {
+                return Err(Error::MmcNotSupported);
+            }
+        }
+
+        if !start_sec.is_multiple_of(erase_group) || !end_sec.is_multiple_of(erase_group) {
+            return Err(Error::RegisterAccessFailed);
+        }
+
+        if kind == EraseType::Erase {
+            self.command(CMD6, 0x03B1_0000)?; // enhanced-erase attribute
+        }
+
+        self.command(CMD35, start_sec)?;
+
+        let last = end_sec
+            .checked_sub(erase_group)
+            .ok_or(Error::RegisterAccessFailed)?;
+        if start_sec > last {
+            return Err(Error::RegisterAccessFailed);
+        }
+
+        self.command(CMD36, last)?;
+        self.command(CMD38, kind as u32)?;
+        self.send_status()
+    }
+
+    // -----------------------------------------------------------------------
+    // Sanitize
+    // -----------------------------------------------------------------------
+
+    pub fn sanitize(&mut self) -> Result<(), Error> {
+        let mut ecsd = [0u8; 512];
+        self.read_ext_csd(&mut ecsd)?;
+        if ecsd[231] & 0x40 == 0 {
+            return Err(Error::MmcNotSupported);
+        }
+        self.command(CMD6, 0x03A5_FF00)?;
+        self.send_status()
+    }
+
+    // -----------------------------------------------------------------------
+    // Async abort
+    // -----------------------------------------------------------------------
+
+    pub fn async_abort(&mut self, is_read: bool) -> Result<(), Error> {
+        self.clear_interrupts()?;
+        let c = make_cmd(12, if is_read { RESP_R1 } else { RESP_R1B });
+        self.command(c, 0)?;
+        self.modify_reg(Register::ClockControl, 0x0600_0000, 0)?;
+        self.poll_mask(Register::ClockControl, 0x0600_0000, 0, false, Some(5000))
+    }
+
+    // -----------------------------------------------------------------------
+    // Fuse dump (Xbox debug probe specific)
+    // -----------------------------------------------------------------------
+
+    pub fn dump_fuses(&mut self) -> Result<SmcFuses, Error> {
+        self.backend.initialize()?;
+        self.backend
+            .write_register(Register::InitCommand, 0x0000_0003)?;
+
+        // Wait for bridge to come up
+        self.sanity_check()?;
 
         let mut buf = [0u8; 0x38];
-
         let mut pos = 0;
         for reg in Register::XipDataFirst.address()..=Register::XipDataLast.address() {
             let value = self.backend.read_register(reg)?;
@@ -123,7 +736,7 @@ impl<B: SpiBackend, D: DelayTrait> EmmcReader<B, D> {
         offset += 12;
         let sbrev: [u8; 4] = buf[offset..offset + 4].try_into().unwrap();
 
-        let fuses = SMC_FUSES {
+        let fuses = SmcFuses {
             ECID: ecid,
             Exp1SMCBLDigest: exp1smcbldigest,
             RsvdPublic: rsvdpublic,
@@ -134,434 +747,52 @@ impl<B: SpiBackend, D: DelayTrait> EmmcReader<B, D> {
 
         Ok(fuses)
     }
-    fn dump_mmc_registers(&mut self) {}
 
-    /// Send init sequence
-    ///
-    /// To be ran after sanity check
-    fn init_sequence(&mut self) -> Result<(), Error> {
-        let res = self.read_register(Register::Command)?;
-        assert_eq!(0x0, res);
-        self.write_register(Register::Command, 0x1)?;
-        let res = self.read_register(Register::Command)?;
-        assert_eq!(0x3, res);
-        let res = self.read_register(Register::Command)?;
-        assert_eq!(0x3, res);
+    // -----------------------------------------------------------------------
+    // Debug
+    // -----------------------------------------------------------------------
 
-        self.write_register(Register::Command, 0x3)?;
-        self.write_register(Register::Command, 0x43)?;
-        self.write_register(Register::Command, 0x47)?;
-        let res = self.read_register(Register::Config1)?;
-        assert_eq!(0x0, res);
-
-        self.write_register(Register::Config1, 0x1FFF0033)?;
-        let res = self.read_register(Register::Config2)?;
-        assert_eq!(0x0, res);
-        self.write_register(Register::Config2, 0x17FF0033)?;
-        self.write_register(Register::Argument, 0x0)?;
-        self.write_register(Register::CommandAndTransferMode, 0x0)?;
-        let res = self.read_register(Register::InterruptStatus)?;
-        assert_eq!(0x1, res);
-        self.write_register(Register::InterruptStatus, 0x1)?;
-        let res = self.read_register(Register::Command)?;
-        assert_eq!(0x47, res);
-        self.write_register(Register::Command, 0xE0047)?;
-
-        // Do some sort of memory training?
-        let mut current_val = None;
-        loop {
-            self.write_register(Register::Argument, 0x40000080)?;
-            self.write_register(Register::CommandAndTransferMode, 0x1020000)?;
-            let res = self.read_register(Register::InterruptStatus)?;
-            assert_eq!(0x0, res);
-            let res = self.read_register(Register::InterruptStatus)?;
-            assert_eq!(0x1, res);
-            self.write_register(Register::InterruptStatus, 0x1)?;
-            let res = self.read_register(Register::Response0And1)?;
-
-            if current_val.is_none() {
-                assert_eq!(0xFF8080, res);
-                current_val = Some(res);
-                //println!("Current val: {res:#08X}");
-            }
-
-            if let Some(val) = current_val
-                && val != res {
-                    assert_eq!(0xC0FF8080, res);
-                    //println!("Val changed, prev: {val:#08X}, now: {res:#08X}");
-                    break;
+    /// Print all standard flash controller registers.
+    #[cfg(feature = "std")]
+    pub fn dump_registers(&mut self) {
+        for i in 0u8..=0x0F {
+            if let Some(reg) = Register::from_address(i) {
+                if let Ok(v) = self.read_reg(reg) {
+                    println!("reg[0x{i:02X}] = 0x{v:08X}");
                 }
-
-            self.delay.delay_us(100);
-        }
-
-        self.write_register(Register::Argument, 0x0)?;
-        self.write_register(Register::CommandAndTransferMode, 0x2090000)?;
-        let res = self.read_register(Register::InterruptStatus)?;
-        assert_eq!(0x0, res);
-        let res = self.read_register(Register::InterruptStatus)?;
-        assert_eq!(0x0, res);
-        let res = self.read_register(Register::InterruptStatus)?;
-        assert_eq!(0x1, res);
-        self.write_register(Register::InterruptStatus, 0x1)?;
-        let res = self.read_register(Register::Response0And1)?;
-        assert_eq!(0xF4E59BF, res);
-        let res = self.read_register(Register::Response2And3)?;
-        assert_eq!(0x3932009D, res);
-        let res = self.read_register(Register::Response4And5)?;
-        assert_eq!(0x30303847, res);
-        let res = self.read_register(Register::Response6And7)?;
-        assert_eq!(0x110100, res);
-
-        self.write_register(Register::Argument, 0xA0000)?;
-        self.write_register(Register::CommandAndTransferMode, 0x31A0000)?;
-        let res = self.read_register(Register::InterruptStatus)?;
-        assert_eq!(0x0, res);
-        let res = self.read_register(Register::InterruptStatus)?;
-        assert_eq!(0x1, res);
-        self.write_register(Register::InterruptStatus, 0x1)?;
-
-        self.write_register(Register::Argument, 0xA0000)?;
-        self.write_register(Register::CommandAndTransferMode, 0x71A0000)?;
-        let res = self.read_register(Register::InterruptStatus)?;
-        assert_eq!(0x0, res);
-        let res = self.read_register(Register::InterruptStatus)?;
-        assert_eq!(0x1, res);
-        self.write_register(Register::InterruptStatus, 0x1)?;
-
-        self.write_register(Register::Argument, 0x3B70200)?;
-        self.write_register(Register::CommandAndTransferMode, 0x61B0000)?;
-        let res = self.read_register(Register::InterruptStatus)?;
-        assert_eq!(0x0, res);
-        let res = self.read_register(Register::InterruptStatus)?;
-        assert_eq!(0x3, res);
-        self.write_register(Register::InterruptStatus, 0x1)?;
-        let res = self.read_register(Register::InterruptStatus)?;
-        assert_eq!(0x2, res);
-        self.write_register(Register::InterruptStatus, 0x2)?;
-        let res = self.read_register(Register::Reg_0A)?;
-        assert_eq!(0x800000, res);
-        self.write_register(Register::Reg_0A, 0x800020)?;
-
-        self.write_register(Register::Argument, 0x200)?;
-        self.write_register(Register::CommandAndTransferMode, 0x101A0000)?;
-        let res = self.read_register(Register::InterruptStatus)?;
-        assert_eq!(0x0, res);
-        let res = self.read_register(Register::InterruptStatus)?;
-        assert_eq!(0x1, res);
-        self.write_register(Register::InterruptStatus, 0x1)?;
-
-        self.write_register(Register::Argument, 0x3B90100)?;
-        self.write_register(Register::CommandAndTransferMode, 0x61B0000)?;
-        let res = self.read_register(Register::InterruptStatus)?;
-        assert_eq!(0x0, res);
-        let res = self.read_register(Register::InterruptStatus)?;
-        assert_eq!(0x3, res);
-        self.write_register(Register::InterruptStatus, 0x1)?;
-        let res = self.read_register(Register::InterruptStatus)?;
-        assert_eq!(0x2, res);
-        self.write_register(Register::InterruptStatus, 0x2)?;
-        let res = self.read_register(Register::Reg_0F)?;
-        assert_eq!(0x0, res);
-
-        self.write_register(Register::Reg_0F, 0x80000)?;
-        self.write_register(Register::Reg_0A, 0x800024)?;
-        self.write_register(Register::XipOutputDelay, 0x70001)?;
-        let res = self.read_register(Register::XipOutputDelay)?;
-        assert_eq!(0x70001, res);
-        let res = self.read_register(Register::Command)?;
-        assert_eq!(0xE0047, res);
-        self.write_register(Register::Command, 0xE0047)?;
-        let res = self.read_register(Register::Command)?;
-        assert_eq!(0xE0047, res);
-        self.write_register(Register::Command, 0xE0043)?;
-        self.write_register(Register::Command, 0xE0203)?;
-        self.write_register(Register::Command, 0xE0207)?;
-        self.write_register(Register::Reg_01, 0x10200)?;
-
-        Ok(())
-    }
-
-    /// Initialize the device
-    ///
-    /// This performs:
-    /// 1. Hardware initialization (GPIO, SPI, reset)
-    /// 2. Sends initialization command
-    /// 3. Runs sanity checks
-    /// 4. Send init sequence
-    pub fn init(&mut self) -> Result<(), Error> {
-        if self.is_initialized() {
-            return Ok(());
-        }
-
-        // Step 1: Initialize hardware backend
-        self.backend.initialize()?;
-
-        // Step 2: Send initialization command
-        // Write 0x00000003 to register 0x44
-        self.backend
-            .write_register(Register::InitCommand, 0x00000003)?;
-
-        // Step 3: Sanity checks
-        self.sanity_check()?;
-
-        // Step 4: Init sequence
-        self.init_sequence()?;
-
-        self.initialized = true;
-        Ok(())
-    }
-
-    /// Run sanity checks to verify communication
-    fn sanity_check(&mut self) -> Result<(), Error> {
-        const TEST_VAL_1: u32 = 0x12345678;
-        const TEST_VAL_2: u32 = 0xEDCBA987;
-        for test_value in [TEST_VAL_1, TEST_VAL_2, TEST_VAL_1, TEST_VAL_2] {
-            self.backend
-                .write_register(Register::Argument, test_value)?;
-            let response1 = self.backend.read_register(Register::Argument)?;
-
-            if response1 != test_value {
-                return Err(Error::SanityCheckFailed {
-                    expected: test_value,
-                    actual: response1,
-                });
             }
         }
-
-        Ok(())
-    }
-
-    /// Write a value to a register
-    pub fn write_register(&mut self, register: Register, value: u32) -> Result<(), Error> {
-        self.backend.write_register(register, value)
-    }
-
-    /// Read a value from a register
-    pub fn read_register(&mut self, register: Register) -> Result<u32, Error> {
-        self.backend.read_register(register)
-    }
-
-    /// Read a 512-byte block
-    pub fn read_data(&mut self, register: Register, buffer: &mut [u8]) -> Result<(), Error> {
-        self.backend.read_data(register, buffer)
-    }
-
-    /// Read the present state register
-    pub fn read_present_state(&mut self) -> Result<u32, Error> {
-        self.read_register(Register::PresentState)
-    }
-
-    /// Read the page number / interrupt status register (0x0C)
-    pub fn read_interrupt_status(&mut self) -> Result<u32, Error> {
-        self.read_register(Register::InterruptStatus)
-    }
-
-    /// Read the command / status config register (0x0B)
-    pub fn read_status_config(&mut self) -> Result<u32, Error> {
-        self.read_register(Register::Command)
-    }
-
-    /// Read a response register
-    pub fn read_response(&mut self, index: u8) -> Result<u32, Error> {
-        let register = match index {
-            0 => Register::Response0And1,
-            1 => Register::Response2And3,
-            2 => Register::Response4And5,
-            3 => Register::Response6And7,
-            _ => return Err(Error::RegisterAccessFailed),
-        };
-
-        self.read_register(register)
-    }
-
-    /// Check if initialization is complete
-    pub fn is_initialized(&self) -> bool {
-        self.initialized
-    }
-
-    pub fn poll_for_value(&mut self, register: Register, value: u32) -> Result<(), Error> {
-        const MAX_POLLS: u32 = 10;
-        for _ in 0..MAX_POLLS {
-            let status_value = self.read_register(register)?;
-            if status_value == value {
-                return Ok(());
-            }
-            self.delay.delay_ms(10);
-        }
-
-        Err(Error::Timeout)
-    }
-
-    /// Read a page from the eMMC chip
-    ///
-    /// This implements the full page read sequence based on protocol trace analysis:
-    /// 1. Clear/reset status
-    /// 2. Set page address
-    /// 3. Set transfer configuration
-    /// 4. Poll for command accepted
-    /// 5. Poll for data ready and acknowledge
-    /// 6. Read 512 bytes from data FIFO
-    /// 7. Acknowledge transfer complete
-    ///
-    /// # Arguments
-    /// * `page_number` - The page number to read
-    /// * `buffer` - Buffer to store the 512-byte page
-    pub fn read_page(&mut self, page_number: u32, buffer: &mut [u8; 512]) -> Result<(), Error> {
-        // Step 1: Clear/reset status
-        self.write_register(Register::InterruptStatus, status::STATUS_CLEAR)?;
-
-        // Step 2: Set page address
-        self.write_register(Register::Argument, page_number)?;
-
-        // Step 3: Set transfer configuration (observed value from protocol trace)
-        self.write_register(Register::CommandAndTransferMode, transfer_config::PAGE_READ)?;
-
-        // Step 4: Poll for command accepted
-        self.poll_for_value(Register::InterruptStatus, status::CMD_ACCEPTED)?;
-
-        // Step 5: Poll for data ready and send interrupt acknowledge
-        self.poll_for_value(Register::InterruptStatus, status::DATA_READY)?;
-        self.write_register(Register::InterruptStatus, status::DATA_READY)?;
-
-        // Step 6: Read 512-byte block from data FIFO
-        self.read_data(Register::DataFifo, buffer)?;
-
-        // Step 7: Read transfer complete status and send interrupt acknowledge
-        let _status_value = self.read_register(Register::InterruptStatus)?;
-        self.write_register(Register::InterruptStatus, status::TRANSFER_COMPLETE)?;
-
-        Ok(())
-    }
-
-    /// Erase a page from the eMMC chip (STUB)
-    ///
-    /// This implements the page erase sequence (to be completed based on protocol analysis):
-    /// 1. Clear/reset status
-    /// 2. Set page address
-    /// 3. Set erase transfer configuration
-    /// 4. Poll for command accepted
-    /// 5. Poll for erase complete
-    /// 6. Acknowledge completion
-    ///
-    /// # Arguments
-    /// * `page_number` - The page number to erase
-    ///
-    /// # Note
-    /// This is currently a STUB implementation. The actual protocol sequence needs to be
-    /// determined through hardware testing and protocol trace analysis.
-    pub fn erase_page(&mut self, page_number: u32) -> Result<(), Error> {
-        // TODO: Implement actual erase sequence once protocol is understood
-        // The sequence will likely be similar to read_page but with different
-        // transfer configuration and status polling
-
-        // Step 1: Clear/reset status
-        self.write_register(Register::InterruptStatus, status::STATUS_CLEAR)?;
-
-        // Step 2: Set page address to erase
-        self.write_register(Register::Argument, page_number)?;
-
-        // Step 3: Set erase transfer configuration
-        // TODO: Determine the correct transfer configuration value for erase operations
-        // This value needs to be captured from actual hardware protocol traces
-        const ERASE_TRANSFER_CONFIG: u32 = 0x00000000; // PLACEHOLDER - needs actual value
-        self.write_register(Register::CommandAndTransferMode, ERASE_TRANSFER_CONFIG)?;
-
-        // Step 4: Poll for command accepted
-        self.poll_for_value(Register::InterruptStatus, status::CMD_ACCEPTED)?;
-
-        // Step 5: Poll for erase complete
-        // TODO: Determine the correct status value for erase completion
-        // Erasing typically takes longer than reading
-        self.poll_for_value(Register::InterruptStatus, status::TRANSFER_COMPLETE)?;
-        self.write_register(Register::InterruptStatus, status::TRANSFER_COMPLETE)?;
-
-        todo!("WARNING: erase_page is a STUB - protocol sequence not yet validated");
-
-        Ok(())
-    }
-
-    /// Write a page to the eMMC chip (STUB)
-    ///
-    /// This implements the page write sequence (to be completed based on protocol analysis):
-    /// 1. Clear/reset status
-    /// 2. Set page address
-    /// 3. Set write transfer configuration
-    /// 4. Poll for command accepted
-    /// 5. Write 512 bytes to data FIFO
-    /// 6. Poll for write complete
-    /// 7. Acknowledge completion
-    ///
-    /// # Arguments
-    /// * `page_number` - The page number to write
-    /// * `buffer` - Buffer containing the 512-byte page to write
-    ///
-    /// # Note
-    /// This is currently a STUB implementation. The actual protocol sequence needs to be
-    /// determined through hardware testing and protocol trace analysis.
-    pub fn write_page(&mut self, page_number: u32, buffer: &[u8; 512]) -> Result<(), Error> {
-        // TODO: Implement actual write sequence once protocol is understood
-        // The sequence will likely be similar to read_page but with data output
-        // instead of data input
-
-        // Step 1: Clear/reset status
-        self.write_register(Register::InterruptStatus, status::STATUS_CLEAR)?;
-
-        // Step 2: Set page address to write
-        self.write_register(Register::Argument, page_number)?;
-
-        // Step 3: Set write transfer configuration
-        // TODO: Determine the correct transfer configuration value for write operations
-        // This value needs to be captured from actual hardware protocol traces
-        const WRITE_TRANSFER_CONFIG: u32 = 0x00000000; // PLACEHOLDER - needs actual value
-        self.write_register(Register::CommandAndTransferMode, WRITE_TRANSFER_CONFIG)?;
-
-        // Step 4: Poll for command accepted
-        self.poll_for_value(Register::InterruptStatus, status::CMD_ACCEPTED)?;
-
-        // Step 5: Write 512-byte block to data FIFO
-        // TODO: Implement write_data method in backend trait
-        // For now, this is a placeholder that would trigger a compile error
-        // if uncommented without implementing the backend method
-        // self.backend.write_data(Register::DataFifo, buffer)?;
-
-        // Step 6: Poll for write complete
-        // TODO: Determine if there's a specific status for write ready/complete
-        self.poll_for_value(Register::InterruptStatus, status::TRANSFER_COMPLETE)?;
-        self.write_register(Register::InterruptStatus, status::TRANSFER_COMPLETE)?;
-
-        todo!("WARNING: write_page is a STUB - protocol sequence not yet validated");
-
-        // Prevent unused variable warning
-        let _ = buffer;
-
-        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DelayTrait;
 
     // Mock delay
-    struct MockDelay;
+    #[derive(Clone)]
+    struct MockClock;
 
-    impl DelayTrait for MockDelay {
+    impl DelayNs for MockClock {
         fn delay_ns(&mut self, ns: u32) {}
     }
 
-    // Mock backend for testing
+    impl ClockTrait for MockClock {
+        type Instant = std::time::Instant;
+
+        fn now(&self) -> Self::Instant {
+            std::time::Instant::now()
+        }
+    }
+
     struct MockBackend {
         registers: std::collections::HashMap<u8, u32>,
-        initialized: bool,
     }
 
     impl MockBackend {
         fn new() -> Self {
             Self {
                 registers: std::collections::HashMap::new(),
-                initialized: false,
             }
         }
     }
@@ -586,23 +817,24 @@ mod tests {
         }
 
         fn initialize(&mut self) -> Result<(), Error> {
-            self.initialized = true;
             Ok(())
         }
     }
 
     #[test]
-    fn test_read_write() {
-        let delay_impl = MockDelay;
+    fn test_read_write_register() {
         let backend = MockBackend::new();
-        let mut reader = EmmcReader::new(backend, delay_impl);
-        // reader.init().unwrap();
+        let mut reader = EmmcReader::new(backend, MockClock);
 
-        // Write and read back
-        reader
-            .write_register(Register::Argument, 0xDEADBEEF)
-            .unwrap();
-        let value = reader.read_register(Register::Argument).unwrap();
-        assert_eq!(value, 0xDEADBEEF);
+        reader.write_reg(Register::Argument, 0xDEAD_BEEF).unwrap();
+        let value = reader.read_reg(Register::Argument).unwrap();
+        assert_eq!(value, 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn test_sanity_check() {
+        let backend = MockBackend::new();
+        let mut reader = EmmcReader::new(backend, MockClock);
+        reader.sanity_check().unwrap();
     }
 }
