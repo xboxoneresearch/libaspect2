@@ -1,4 +1,4 @@
-//! Arasan SDHCI eMMC Controller over SPI
+//! Arasan eMMC Controller over SPI
 //!
 //! Full MMC initialization and data transfer using the SpiBackend transport.
 //! Register indices correspond directly to SpiBackend register addresses.
@@ -189,7 +189,7 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     // Clock control
     // -----------------------------------------------------------------------
 
-    /// Program the SDHCI clock divider for a target frequency.
+    /// Program the clock divider for a target frequency.
     fn set_clock(&mut self, freq_mhz: f64) -> Result<(), Error> {
         // Enable internal clock (bit 0)
         self.modify_reg(Register::ClockControl, 1, 0)?;
@@ -421,7 +421,7 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         // Hardware init (GPIO, SPI, reset)
         self.backend.initialize()?;
 
-        // Enable the SPI → SDHCI bridge
+        // Enable the SPI → eMMC bridge
         self.backend
             .write_register(Register::InitCommand, 0x0000_0003)?;
 
@@ -432,7 +432,7 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         // FT2232H supports up to 30 MHz
         self.backend.set_spi_clock(30000)?;
 
-        // Enable SDHCI interrupts so polling works
+        // Enable eMMC interrupts so polling works
         self.enable_interrupts()?;
 
         // Start with a slow identification clock (~400 kHz)
@@ -752,7 +752,7 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     // Debug
     // -----------------------------------------------------------------------
 
-    /// Print all standard SDHCI registers.
+    /// Print all standard flash controller registers.
     #[cfg(feature = "std")]
     pub fn dump_registers(&mut self) {
         for i in 0u8..=0x0F {

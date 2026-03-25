@@ -137,7 +137,7 @@ pub mod responses {
 
 /// MMC command encoding
 ///
-/// Packed u32: upper 16 = SDHCI Command Register, lower 16 = Transfer Mode.
+/// Packed u32: upper 16 = Command Register, lower 16 = Transfer Mode.
 ///   Command Register: [13:8] index, [5] data-present, [4] index-check,
 ///                     [3] CRC-check, [1:0] response type
 pub const fn make_cmd(index: u8, resp: u8) -> u32 {

@@ -281,7 +281,7 @@ impl SpiBackend for FtdiBackend {
         self.set_chip_select(false)?;
 
         // Setup clock frequency — conservative 5 kHz for init;
-        // ramped up after the SPI-SDHCI bridge is verified.
+        // ramped up after the SPI bridge is verified.
         self.dev.set_clock(5_000)?;
 
         Ok(())
