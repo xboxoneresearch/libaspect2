@@ -4,10 +4,12 @@
 //! Register indices correspond directly to SpiBackend register addresses.
 
 use super::backend::SpiBackend;
-use super::protocol::commands::{Register, status, transfer_config};
+use super::protocol::constants::{
+    BASE_CLOCK_MHZ, BLOCK_SIZE, ERROR_INTERRUPT, EraseType, RCA_ARG, Register, commands::*,
+    make_cmd, responses::*, status, transfer_config,
+};
 use crate::error::Error;
 use crate::prelude::*;
-use crate::spi::protocol::commands::ERROR_INTERRUPT;
 
 // ---------------------------------------------------------------------------
 // SMC fuse hashes (Xbox debug probe)
@@ -50,67 +52,7 @@ impl std::fmt::Display for SmcFuses {
     }
 }
 
-// ---------------------------------------------------------------------------
-// MMC command encoding
-//
-// Packed u32: upper 16 = SDHCI Command Register, lower 16 = Transfer Mode.
-//   Command Register: [13:8] index, [5] data-present, [4] index-check,
-//                     [3] CRC-check, [1:0] response type
-// ---------------------------------------------------------------------------
-
-const fn make_cmd(index: u8, resp: u8) -> u32 {
-    ((index as u32) << 24) | ((resp as u32) << 16)
-}
-
-const RESP_NONE: u8 = 0x00;
-const RESP_R2: u8 = 0x09; // 136-bit
-const RESP_R3: u8 = 0x02; // 48-bit, no CRC/Index
-const RESP_R1: u8 = 0x1A; // 48-bit, CRC+Index
-const RESP_R1B: u8 = 0x1B; // 48-bit, CRC+Index, busy
-
-// Non-data commands
-const CMD0: u32 = make_cmd(0, RESP_NONE); // GO_IDLE
-const CMD1: u32 = make_cmd(1, RESP_R3); // SEND_OP_COND
-const CMD2: u32 = make_cmd(2, RESP_R2); // ALL_SEND_CID
-const CMD3: u32 = make_cmd(3, RESP_R1); // SET_RCA
-const CMD6: u32 = make_cmd(6, RESP_R1B); // SWITCH
-const CMD7_SEL: u32 = make_cmd(7, RESP_R1); // SELECT_CARD
-const CMD7_DESEL: u32 = make_cmd(7, 0x18); // DESELECT_CARD
-const CMD13: u32 = make_cmd(13, RESP_R1); // SEND_STATUS
-const CMD16: u32 = make_cmd(16, RESP_R1); // SET_BLOCKLEN
-const CMD35: u32 = make_cmd(35, RESP_R1); // ERASE_GROUP_START
-const CMD36: u32 = make_cmd(36, RESP_R1); // ERASE_GROUP_END
-const CMD38: u32 = make_cmd(38, RESP_R1); // ERASE
-
-// Data transfer commands: CMD Register (upper 16) | Transfer Mode (lower 16)
-//   Transfer Mode bits: [5] multi-block, [4] read-direction, [2] auto-CMD12,
-//                       [1] block-count-enable
-const CMD8_EXT_CSD: u32 = 0x083A_0010; // SEND_EXT_CSD (single read)
-const CMD17_READ: u32 = 0x113A_0010; // READ_SINGLE_BLOCK
-const CMD18_READ: u32 = 0x123A_0036; // READ_MULTIPLE_BLOCK
-const CMD24_WRITE: u32 = 0x183A_0000; // WRITE_BLOCK
-const CMD25_WRITE: u32 = 0x193A_0026; // WRITE_MULTIPLE_BLOCK
-
-const RCA: u32 = 10;
-const RCA_ARG: u32 = RCA << 16;
-const BLOCK_SIZE: u32 = 512;
-const BASE_CLOCK_MHZ: f64 = 196.875;
-
-// ---------------------------------------------------------------------------
-// Erase type
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EraseType {
-    Erase = 0,
-    Trim = 1,
-    Discard = 3,
-}
-
-// ---------------------------------------------------------------------------
-// EmmcReader — the controller
-// ---------------------------------------------------------------------------
-
+/// EmmcReader — the controller
 pub struct EmmcReader<B: SpiBackend, C: ClockTrait + DelayNs + Clone> {
     pub backend: B,
     internal_clock: C,

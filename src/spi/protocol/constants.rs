@@ -1,6 +1,11 @@
 /// Command and register definitions for eMMC SPI protocol
 use crate::prelude::*;
 
+pub const RCA: u32 = 10;
+pub const RCA_ARG: u32 = RCA << 16;
+pub const BLOCK_SIZE: u32 = 512;
+pub const BASE_CLOCK_MHZ: f64 = 196.875;
+
 /// SPI Command type (2 bits)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -113,6 +118,58 @@ impl Register {
             _ => None,
         }
     }
+}
+
+pub mod responses {
+    pub const RESP_NONE: u8 = 0x00;
+    pub const RESP_R2: u8 = 0x09; // 136-bit
+    pub const RESP_R3: u8 = 0x02; // 48-bit, no CRC/Index
+    pub const RESP_R1: u8 = 0x1A; // 48-bit, CRC+Index
+    pub const RESP_R1B: u8 = 0x1B; // 48-bit, CRC+Index, busy
+}
+
+/// MMC command encoding
+///
+/// Packed u32: upper 16 = SDHCI Command Register, lower 16 = Transfer Mode.
+///   Command Register: [13:8] index, [5] data-present, [4] index-check,
+///                     [3] CRC-check, [1:0] response type
+pub const fn make_cmd(index: u8, resp: u8) -> u32 {
+    ((index as u32) << 24) | ((resp as u32) << 16)
+}
+
+pub mod commands {
+    use super::{make_cmd, responses::*};
+
+    // Non-data commands
+    pub const CMD0: u32 = make_cmd(0, RESP_NONE); // GO_IDLE
+    pub const CMD1: u32 = make_cmd(1, RESP_R3); // SEND_OP_COND
+    pub const CMD2: u32 = make_cmd(2, RESP_R2); // ALL_SEND_CID
+    pub const CMD3: u32 = make_cmd(3, RESP_R1); // SET_RCA
+    pub const CMD6: u32 = make_cmd(6, RESP_R1B); // SWITCH
+    pub const CMD7_SEL: u32 = make_cmd(7, RESP_R1); // SELECT_CARD
+    pub const CMD7_DESEL: u32 = make_cmd(7, 0x18); // DESELECT_CARD
+    pub const CMD13: u32 = make_cmd(13, RESP_R1); // SEND_STATUS
+    pub const CMD16: u32 = make_cmd(16, RESP_R1); // SET_BLOCKLEN
+    pub const CMD35: u32 = make_cmd(35, RESP_R1); // ERASE_GROUP_START
+    pub const CMD36: u32 = make_cmd(36, RESP_R1); // ERASE_GROUP_END
+    pub const CMD38: u32 = make_cmd(38, RESP_R1); // ERASE
+
+    // Data transfer commands: CMD Register (upper 16) | Transfer Mode (lower 16)
+    //   Transfer Mode bits: [5] multi-block, [4] read-direction, [2] auto-CMD12,
+    //                       [1] block-count-enable
+    pub const CMD8_EXT_CSD: u32 = 0x083A_0010; // SEND_EXT_CSD (single read)
+    pub const CMD17_READ: u32 = 0x113A_0010; // READ_SINGLE_BLOCK
+    pub const CMD18_READ: u32 = 0x123A_0036; // READ_MULTIPLE_BLOCK
+    pub const CMD24_WRITE: u32 = 0x183A_0000; // WRITE_BLOCK
+    pub const CMD25_WRITE: u32 = 0x193A_0026; // WRITE_MULTIPLE_BLOCK
+}
+
+/// Erase type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EraseType {
+    Erase = 0,
+    Trim = 1,
+    Discard = 3,
 }
 
 /// Data size for register operations

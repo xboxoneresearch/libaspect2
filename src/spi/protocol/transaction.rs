@@ -1,4 +1,4 @@
-use super::commands::{TransferOp, DataSize, Register};
+use super::constants::{DataSize, Register, TransferOp};
 /// Transaction types and builders for eMMC SPI protocol
 use crate::prelude::*;
 

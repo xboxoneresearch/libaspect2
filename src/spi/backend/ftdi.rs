@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use super::{GpioControl, SpiBackend};
 use crate::error::Error;
-use crate::spi::protocol::commands::{TransferOp, Register};
+use crate::spi::protocol::constants::{Register, TransferOp};
 
 /*
 Pin assignments on FTDI FT4232H:

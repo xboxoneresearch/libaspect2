@@ -8,7 +8,7 @@ use embedded_hal::{delay::DelayNs, digital::OutputPin, spi::SpiDevice};
 use super::{GpioControl, SpiBackend};
 use crate::error::Error;
 use crate::prelude::*;
-use crate::spi::protocol::commands::{TransferOp, Register};
+use crate::spi::protocol::constants::{Register, TransferOp};
 
 /// embedded-hal 1.0 SPI Backend
 ///
