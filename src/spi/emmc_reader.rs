@@ -7,6 +7,7 @@ use super::backend::SpiBackend;
 use super::protocol::commands::{Register, status, transfer_config};
 use crate::error::Error;
 use crate::prelude::*;
+use crate::spi::protocol::commands::ERROR_INTERRUPT;
 
 // ---------------------------------------------------------------------------
 // SMC fuse hashes (Xbox debug probe)
@@ -48,45 +49,6 @@ impl std::fmt::Display for SmcFuses {
         writeln!(f, "SB Rev: {}", hex::encode(self.SbRev))
     }
 }
-
-// ---------------------------------------------------------------------------
-// SDHCI register indices
-//
-// These are the raw register addresses used by SpiBackend. Each maps to a
-// standard SDHCI 32-bit register:
-//
-//   0x01 → Block Size / Block Count         0x09 → Present State
-//   0x02 → Argument                         0x0A → Host Control 1
-//   0x03 → Transfer Mode + Command          0x0B → Clock Control
-//   0x04 → Response [31:0]                  0x0C → Interrupt Status
-//   0x05 → Response [63:32]                 0x0D → Int Status Enable
-//   0x06 → Response [95:64]                 0x0E → Int Signal Enable
-//   0x07 → Response [127:96]                0x0F → Auto CMD / Host Ctrl 2
-//   0x08 → Buffer Data Port
-//
-// Vendor: 0x86 = tuning trigger, 0x88 = XIP output delay
-// ---------------------------------------------------------------------------
-
-mod sdhci {
-    pub const BLOCK_SIZE_COUNT: u8 = 0x01;
-    pub const ARGUMENT: u8 = 0x02;
-    pub const CMD_XFER: u8 = 0x03;
-    pub const RESP0: u8 = 0x04;
-    pub const RESP1: u8 = 0x05;
-    pub const RESP2: u8 = 0x06;
-    pub const RESP3: u8 = 0x07;
-    pub const BUFFER_DATA: u8 = 0x08;
-    pub const HOST_CONTROL: u8 = 0x0A;
-    pub const CLOCK_CONTROL: u8 = 0x0B;
-    pub const INT_STATUS: u8 = 0x0C;
-    pub const INT_STATUS_EN: u8 = 0x0D;
-    pub const INT_SIGNAL_EN: u8 = 0x0E;
-    pub const AUTO_CMD_HOST2: u8 = 0x0F;
-    pub const VENDOR_TUNING: u8 = 0x86;
-    pub const XIP_OUT_DELAY: u8 = 0x88;
-}
-
-const ERROR_INTERRUPT: u32 = 1 << 15;
 
 // ---------------------------------------------------------------------------
 // MMC command encoding
@@ -185,15 +147,15 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     // Register helpers
     // -----------------------------------------------------------------------
 
-    fn read_reg(&mut self, r: u8) -> Result<u32, Error> {
+    fn read_reg(&mut self, r: Register) -> Result<u32, Error> {
         self.backend.read_register(r)
     }
 
-    fn write_reg(&mut self, r: u8, v: u32) -> Result<(), Error> {
+    fn write_reg(&mut self, r: Register, v: u32) -> Result<(), Error> {
         self.backend.write_register(r, v)
     }
 
-    fn modify_reg(&mut self, r: u8, set: u32, clear: u32) -> Result<(), Error> {
+    fn modify_reg(&mut self, r: Register, set: u32, clear: u32) -> Result<(), Error> {
         let v = self.read_reg(r)?;
         self.write_reg(r, (v & !clear) | set)
     }
@@ -204,18 +166,18 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
 
     /// Issue a non-data MMC command and wait for completion.
     fn command(&mut self, cmd_word: u32, argument: u32) -> Result<(), Error> {
-        self.write_reg(sdhci::ARGUMENT, argument)?;
-        self.write_reg(sdhci::CMD_XFER, cmd_word)?;
+        self.write_reg(Register::Argument, argument)?;
+        self.write_reg(Register::CommandAndTransferMode, cmd_word)?;
 
         // Wait for Command Complete (bit 0)
-        self.poll_bit(sdhci::INT_STATUS, 0, true, true, None)?;
+        self.poll_bit(Register::InterruptStatus, 0, true, true, None)?;
 
         // Handle response type (bits [17:16] of packed word)
         match (cmd_word >> 16) & 3 {
             0..=2 => {} // none / R2 / R1
             3 => {
                 // R1b — also wait for Transfer Complete (bit 1)
-                let _ = self.poll_bit(sdhci::INT_STATUS, 1, true, true, Some(5000));
+                let _ = self.poll_bit(Register::InterruptStatus, 1, true, true, Some(5000));
             }
             _ => return Err(Error::RegisterAccessFailed),
         }
@@ -230,7 +192,7 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     /// or if the error-interrupt bit is set (when polling INT_STATUS).
     fn poll_mask(
         &mut self,
-        register: u8,
+        register: Register,
         mask: u32,
         expected: u32,
         clear: bool,
@@ -246,9 +208,9 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         loop {
             let val = self.read_reg(register)?;
 
-            if register == sdhci::INT_STATUS && val & ERROR_INTERRUPT != 0 {
+            if register == Register::InterruptStatus && val & ERROR_INTERRUPT != 0 {
                 // Clear the error so we don't loop on it
-                let _ = self.write_reg(sdhci::INT_STATUS, val);
+                let _ = self.write_reg(Register::InterruptStatus, val);
                 return Err(Error::MmcHardwareError { status: val });
             }
             if val & mask == expected & mask {
@@ -267,7 +229,7 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
 
     fn poll_bit(
         &mut self,
-        register: u8,
+        register: Register,
         bit: u8,
         set: bool,
         clear: bool,
@@ -278,7 +240,7 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     }
 
     fn clear_interrupts(&mut self) -> Result<(), Error> {
-        self.write_reg(sdhci::INT_STATUS, 0xFFFF_FFFF)
+        self.write_reg(Register::InterruptStatus, 0xFFFF_FFFF)
     }
 
     // -----------------------------------------------------------------------
@@ -288,22 +250,22 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     /// Program the SDHCI clock divider for a target frequency.
     fn set_clock(&mut self, freq_mhz: f64) -> Result<(), Error> {
         // Enable internal clock (bit 0)
-        self.modify_reg(sdhci::CLOCK_CONTROL, 1, 0)?;
+        self.modify_reg(Register::Command, 1, 0)?;
 
         // Wait for Internal Clock Stable (bit 1)
-        self.poll_bit(sdhci::CLOCK_CONTROL, 1, true, false, Some(1000))?;
+        self.poll_bit(Register::Command, 1, true, false, Some(1000))?;
 
         // Disable SD Clock Output (bit 2) while reprogramming
-        self.modify_reg(sdhci::CLOCK_CONTROL, 0, 4)?;
+        self.modify_reg(Register::Command, 0, 4)?;
 
         // 10-bit divider: freq = base / (2 * divider)
         let divider = (BASE_CLOCK_MHZ / (2.0 * freq_mhz) + 0.5) as u16;
-        let clk = self.read_reg(sdhci::CLOCK_CONTROL)?;
+        let clk = self.read_reg(Register::Command)?;
         let low = (divider << 8) | (clk as u16 & 0x3F) | ((divider >> 2) & 0xC0);
-        self.write_reg(sdhci::CLOCK_CONTROL, (clk & 0xFFFF_0000) | low as u32)?;
+        self.write_reg(Register::Command, (clk & 0xFFFF_0000) | low as u32)?;
 
         // Re-enable SD Clock Output (bit 2)
-        self.modify_reg(sdhci::CLOCK_CONTROL, 4, 0)?;
+        self.modify_reg(Register::Command, 4, 0)?;
         self.clock_mhz = freq_mhz;
         Ok(())
     }
@@ -315,8 +277,8 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     fn enable_interrupts(&mut self) -> Result<(), Error> {
         // INT_STATUS_EN: enable Command Complete, Transfer Complete,
         // Buffer Write/Read Ready, and all error interrupts
-        self.write_reg(sdhci::INT_STATUS_EN, 0x1FFF_0033)?;
-        self.write_reg(sdhci::INT_SIGNAL_EN, 0x17FF_0033)?;
+        self.write_reg(Register::InterruptStatusEn, 0x1FFF_0033)?;
+        self.write_reg(Register::InterruptSignalEn, 0x17FF_0033)?;
         Ok(())
     }
 
@@ -329,12 +291,12 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         self.command(CMD0, 0)?;
 
         // Set data timeout counter (bits [19:17])
-        self.modify_reg(sdhci::CLOCK_CONTROL, 0x000E_0000, 0)?;
+        self.modify_reg(Register::Command, 0x000E_0000, 0)?;
 
         // CMD1 loop — wait for card ready (bit 31 of OCR)
         loop {
             self.command(CMD1, 0x4000_0100)?;
-            if self.read_reg(sdhci::RESP0)? & 0x8000_0000 != 0 {
+            if self.read_reg(Register::Response0And1)? & 0x8000_0000 != 0 {
                 break;
             }
         }
@@ -342,10 +304,10 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         // CMD2 — read CID
         self.command(CMD2, 0)?;
         self.cid = [
-            self.read_reg(sdhci::RESP0)?,
-            self.read_reg(sdhci::RESP1)?,
-            self.read_reg(sdhci::RESP2)?,
-            self.read_reg(sdhci::RESP3)?,
+            self.read_reg(Register::Response0And1)?,
+            self.read_reg(Register::Response2And3)?,
+            self.read_reg(Register::Response4And5)?,
+            self.read_reg(Register::Response6And7)?,
         ];
 
         // CMD3 — assign RCA
@@ -368,7 +330,7 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
 
     fn set_block_count(&mut self, count: u16) -> Result<(), Error> {
         self.write_reg(
-            sdhci::BLOCK_SIZE_COUNT,
+            Register::BlockSizeCount,
             ((count as u32) << 16) | (self.block_size & 0xFFF),
         )
     }
@@ -378,7 +340,7 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     }
 
     fn set_xip_output_delay(&mut self, value: u32) -> Result<(), Error> {
-        self.write_reg(sdhci::XIP_OUT_DELAY, value)
+        self.write_reg(Register::XipOutputDelay, value)
     }
 
     // -----------------------------------------------------------------------
@@ -388,9 +350,9 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     fn configure_high_speed(&mut self, freq_mhz: f64) -> Result<(), Error> {
         if freq_mhz > 25.0 {
             // 1.8V signalling (bit 19 in Host Control 2)
-            self.modify_reg(sdhci::AUTO_CMD_HOST2, 0x0008_0000, 0)?;
+            self.modify_reg(Register::AutoCmdHost2, 0x0008_0000, 0)?;
             // High-Speed Enable (bit 2 of Host Control)
-            self.modify_reg(sdhci::HOST_CONTROL, 4, 0)?;
+            self.modify_reg(Register::HostControl, 4, 0)?;
             let xip = if freq_mhz > 52.0 { 0 } else { 0x0007_0001 };
             self.set_xip_output_delay(xip)?;
         }
@@ -416,8 +378,8 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         self.command(CMD6, 0x03B7_0200)?;
 
         // 8-bit bus width on host side: clear bits [5:3], set bit 5
-        let hc = (self.read_reg(sdhci::HOST_CONTROL)? & !0x38) | 0x20;
-        self.write_reg(sdhci::HOST_CONTROL, hc)?;
+        let hc = (self.read_reg(Register::HostControl)? & !0x38) | 0x20;
+        self.write_reg(Register::HostControl, hc)?;
 
         self.set_block_size(BLOCK_SIZE)?;
 
@@ -449,15 +411,15 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         let saved_bs = self.block_size;
         self.block_size = 128;
 
-        self.write_reg(sdhci::VENDOR_TUNING, 32)?;
+        self.write_reg(Register::VendorTuning, 32)?;
         // Execute Tuning (bit 22 in Host Control 2)
-        self.modify_reg(sdhci::AUTO_CMD_HOST2, 0x0040_0000, 0)?;
+        self.modify_reg(Register::AutoCmdHost2, 0x0040_0000, 0)?;
 
         loop {
             let mut buf = [0u8; 128];
-            self.backend.read_data(sdhci::BUFFER_DATA, &mut buf)?;
+            self.backend.read_data(Register::DataFifo, &mut buf)?;
 
-            if self.read_reg(sdhci::AUTO_CMD_HOST2)? & 0x0040_0000 == 0 {
+            if self.read_reg(Register::AutoCmdHost2)? & 0x0040_0000 == 0 {
                 self.block_size = saved_bs;
                 return Ok(());
             }
@@ -473,21 +435,21 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         self.clear_interrupts()?;
 
         // CMD8 SEND_EXT_CSD (data read)
-        self.write_reg(sdhci::ARGUMENT, 0)?;
-        self.write_reg(sdhci::CMD_XFER, CMD8_EXT_CSD)?;
+        self.write_reg(Register::Argument, 0)?;
+        self.write_reg(Register::CommandAndTransferMode, CMD8_EXT_CSD)?;
 
         // Wait for Command Complete
-        self.poll_bit(sdhci::INT_STATUS, 0, true, true, Some(1000))?;
+        self.poll_bit(Register::InterruptStatus, 0, true, true, Some(1000))?;
 
         // Wait for Buffer Read Ready (bit 5)
-        self.poll_bit(sdhci::INT_STATUS, 5, true, true, Some(1000))?;
+        self.poll_bit(Register::InterruptStatus, 5, true, true, Some(1000))?;
 
         // Read 512 bytes
         buf.fill(0);
-        self.backend.read_data(sdhci::BUFFER_DATA, buf)?;
+        self.backend.read_data(Register::DataFifo, buf)?;
 
         // Wait for Transfer Complete (bit 1)
-        self.poll_bit(sdhci::INT_STATUS, 1, true, true, Some(1000))?;
+        self.poll_bit(Register::InterruptStatus, 1, true, true, Some(1000))?;
 
         Ok(())
     }
@@ -544,8 +506,8 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     /// Reinitialize the controller clock/bus without re-enumerating the card.
     /// Use this after the card is already selected but you want a new speed.
     pub fn controller_init(&mut self, freq_mhz: f64) -> Result<(), Error> {
-        let hc = (self.read_reg(sdhci::HOST_CONTROL)? & !0x38) | 0x20;
-        self.write_reg(sdhci::HOST_CONTROL, hc)?;
+        let hc = (self.read_reg(Register::HostControl)? & !0x38) | 0x20;
+        self.write_reg(Register::HostControl, hc)?;
         self.set_block_size(BLOCK_SIZE)?;
 
         let freq = if freq_mhz > 0.0 {
@@ -601,20 +563,20 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         self.clear_interrupts()?;
 
         // CMD17 READ_SINGLE_BLOCK
-        self.write_reg(sdhci::ARGUMENT, lba)?;
-        self.write_reg(sdhci::CMD_XFER, CMD17_READ)?;
+        self.write_reg(Register::Argument, lba)?;
+        self.write_reg(Register::CommandAndTransferMode, CMD17_READ)?;
 
         // Command Complete
-        self.poll_bit(sdhci::INT_STATUS, 0, true, true, Some(1000))?;
+        self.poll_bit(Register::InterruptStatus, 0, true, true, Some(1000))?;
 
         // Buffer Read Ready (bit 5)
-        self.poll_bit(sdhci::INT_STATUS, 5, true, true, Some(1000))?;
+        self.poll_bit(Register::InterruptStatus, 5, true, true, Some(1000))?;
 
         // Read 512 bytes from the data FIFO
-        self.backend.read_data(sdhci::BUFFER_DATA, buf)?;
+        self.backend.read_data(Register::DataFifo, buf)?;
 
         // Transfer Complete (bit 1)
-        self.poll_bit(sdhci::INT_STATUS, 1, true, true, Some(1000))?;
+        self.poll_bit(Register::InterruptStatus, 1, true, true, Some(1000))?;
 
         Ok(())
     }
@@ -635,24 +597,24 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         self.clear_interrupts()?;
 
         // CMD18 READ_MULTIPLE_BLOCK
-        self.write_reg(sdhci::ARGUMENT, start_lba)?;
-        self.write_reg(sdhci::CMD_XFER, CMD18_READ)?;
+        self.write_reg(Register::Argument, start_lba)?;
+        self.write_reg(Register::CommandAndTransferMode, CMD18_READ)?;
 
         // Command Complete
-        self.poll_bit(sdhci::INT_STATUS, 0, true, true, Some(1000))?;
+        self.poll_bit(Register::InterruptStatus, 0, true, true, Some(1000))?;
 
         // PIO: one block at a time
         for i in 0..count as usize {
             // Buffer Read Ready (bit 5)
-            self.poll_bit(sdhci::INT_STATUS, 5, true, true, None)?;
+            self.poll_bit(Register::InterruptStatus, 5, true, true, None)?;
 
             let start = i * 512;
             self.backend
-                .read_data(sdhci::BUFFER_DATA, &mut buf[start..start + 512])?;
+                .read_data(Register::DataFifo, &mut buf[start..start + 512])?;
         }
 
         // Transfer Complete (bit 1)
-        self.poll_bit(sdhci::INT_STATUS, 1, true, true, Some(5000))?;
+        self.poll_bit(Register::InterruptStatus, 1, true, true, Some(5000))?;
 
         Ok(())
     }
@@ -663,20 +625,20 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         self.clear_interrupts()?;
 
         // CMD24 WRITE_BLOCK
-        self.write_reg(sdhci::ARGUMENT, lba)?;
-        self.write_reg(sdhci::CMD_XFER, CMD24_WRITE)?;
+        self.write_reg(Register::Argument, lba)?;
+        self.write_reg(Register::CommandAndTransferMode, CMD24_WRITE)?;
 
         // Command Complete
-        self.poll_bit(sdhci::INT_STATUS, 0, true, true, Some(1000))?;
+        self.poll_bit(Register::InterruptStatus, 0, true, true, Some(1000))?;
 
         // Buffer Write Ready (bit 4)
-        self.poll_bit(sdhci::INT_STATUS, 4, true, true, Some(1000))?;
+        self.poll_bit(Register::InterruptStatus, 4, true, true, Some(1000))?;
 
         // Write 512 bytes to the data FIFO
-        self.backend.write_data(sdhci::BUFFER_DATA, buf)?;
+        self.backend.write_data(Register::DataFifo, buf)?;
 
         // Transfer Complete (bit 1)
-        self.poll_bit(sdhci::INT_STATUS, 1, true, true, Some(5000))?;
+        self.poll_bit(Register::InterruptStatus, 1, true, true, Some(5000))?;
 
         Ok(())
     }
@@ -697,24 +659,24 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         self.clear_interrupts()?;
 
         // CMD25 WRITE_MULTIPLE_BLOCK
-        self.write_reg(sdhci::ARGUMENT, start_lba)?;
-        self.write_reg(sdhci::CMD_XFER, CMD25_WRITE)?;
+        self.write_reg(Register::Argument, start_lba)?;
+        self.write_reg(Register::CommandAndTransferMode, CMD25_WRITE)?;
 
         // Command Complete
-        self.poll_bit(sdhci::INT_STATUS, 0, true, true, Some(1000))?;
+        self.poll_bit(Register::InterruptStatus, 0, true, true, Some(1000))?;
 
         // PIO: one block at a time
         for i in 0..count as usize {
             // Buffer Write Ready (bit 4)
-            self.poll_bit(sdhci::INT_STATUS, 4, true, true, None)?;
+            self.poll_bit(Register::InterruptStatus, 4, true, true, None)?;
 
             let start = i * 512;
             self.backend
-                .write_data(sdhci::BUFFER_DATA, &buf[start..start + 512])?;
+                .write_data(Register::DataFifo, &buf[start..start + 512])?;
         }
 
         // Transfer Complete (bit 1)
-        self.poll_bit(sdhci::INT_STATUS, 1, true, true, Some(5000))?;
+        self.poll_bit(Register::InterruptStatus, 1, true, true, Some(5000))?;
 
         Ok(())
     }
@@ -794,8 +756,8 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         self.clear_interrupts()?;
         let c = make_cmd(12, if is_read { RESP_R1 } else { RESP_R1B });
         self.command(c, 0)?;
-        self.modify_reg(sdhci::CLOCK_CONTROL, 0x0600_0000, 0)?;
-        self.poll_mask(sdhci::CLOCK_CONTROL, 0x0600_0000, 0, false, Some(5000))
+        self.modify_reg(Register::Command, 0x0600_0000, 0)?;
+        self.poll_mask(Register::Command, 0x0600_0000, 0, false, Some(5000))
     }
 
     // -----------------------------------------------------------------------
@@ -852,8 +814,10 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     #[cfg(feature = "std")]
     pub fn dump_registers(&mut self) {
         for i in 0u8..=0x0F {
-            if let Ok(v) = self.read_reg(i) {
-                println!("reg[0x{i:02X}] = 0x{v:08X}");
+            if let Some(reg) = Register::from_address(i) {
+                if let Ok(v) = self.read_reg(reg) {
+                    println!("reg[0x{i:02X}] = 0x{v:08X}");
+                }
             }
         }
     }
@@ -920,8 +884,8 @@ mod tests {
         let backend = MockBackend::new();
         let mut reader = EmmcReader::new(backend, MockClock);
 
-        reader.write_reg(sdhci::ARGUMENT, 0xDEAD_BEEF).unwrap();
-        let value = reader.read_reg(sdhci::ARGUMENT).unwrap();
+        reader.write_reg(Register::Argument, 0xDEAD_BEEF).unwrap();
+        let value = reader.read_reg(Register::Argument).unwrap();
         assert_eq!(value, 0xDEAD_BEEF);
     }
 

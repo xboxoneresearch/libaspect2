@@ -24,55 +24,56 @@ impl Command {
 }
 
 /// eMMC SPI Controller Register addresses (8 bits)
+//
+//   0x01 → Block Size / Block Count         0x09 → Present State
+//   0x02 → Argument                         0x0A → Host Control 1
+//   0x03 → Transfer Mode + Command          0x0B → Clock Control
+//   0x04 → Response [31:0]                  0x0C → Interrupt Status
+//   0x05 → Response [63:32]                 0x0D → Int Status Enable
+//   0x06 → Response [95:64]                 0x0E → Int Signal Enable
+//   0x07 → Response [127:96]                0x0F → Auto CMD / Host Ctrl 2
+//   0x08 → Data FIFO
+//
+// Vendor: 0x86 = tuning trigger, 0x88 = XIP output delay
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Register {
     /// Register 0x01
-    Reg_01 = 0x01,
-
+    BlockSizeCount = 0x01,
     /// Argument register - buffer/FIFO config
     Argument = 0x02,
-
     /// Command and Transfer Mode register
     CommandAndTransferMode = 0x03,
-
-    /// Response/Status register 0 (also used for status polling)
+    /// Response/Status register (also used for status polling)
     Response0And1 = 0x04,
     Response2And3 = 0x05,
     Response4And5 = 0x06,
     Response6And7 = 0x07,
-
     /// Data FIFO register (for 512-byte block reads)
     DataFifo = 0x08,
-
     /// Present State register
     PresentState = 0x09,
-
     /// Register 0x0A
-    Reg_0A = 0x0A,
-
+    HostControl = 0x0A,
     /// Command register (for issuing commands to eMMC) - also known as StatusConfig
     Command = 0x0B,
-
     /// InterruptStatus
     InterruptStatus = 0x0C,
-
     /// Configuration register 1
-    Config1 = 0x0D,
-
+    InterruptStatusEn = 0x0D,
     /// Configuration register 2
-    Config2 = 0x0E,
-
+    InterruptSignalEn = 0x0E,
     /// Register 0x0F
-    Reg_0F = 0x0F,
-
+    AutoCmdHost2 = 0x0F,
     /// Initialization command register
     InitCommand = 0x44,
-
+    /// Vendor tuning
+    VendorTuning = 0x86,
     /// Register 0x88
     XipOutputDelay = 0x88,
-
+    // Xip Data, first register
     XipDataFirst = 0xC0,
+    // Xip Data, last register
     XipDataLast = 0xCD,
 }
 
@@ -106,8 +107,8 @@ impl Register {
             0x09 => Some(Self::PresentState),
             0x0B => Some(Self::Command),
             0x0C => Some(Self::InterruptStatus),
-            0x0D => Some(Self::Config1),
-            0x0E => Some(Self::Config2),
+            0x0D => Some(Self::InterruptStatusEn),
+            0x0E => Some(Self::InterruptSignalEn),
             0x44 => Some(Self::InitCommand),
             _ => None,
         }
@@ -215,6 +216,9 @@ pub mod transfer_config {
     /// Standard transfer configuration for 512-byte page reads
     pub const PAGE_READ: u32 = 0x113A0010;
 }
+
+/// Interrupt Error flag
+pub const ERROR_INTERRUPT: u32 = 1 << 15;
 
 #[cfg(test)]
 mod tests {
