@@ -86,6 +86,7 @@ dependencies = [
  "libaspect2",
  "log",
  "rand",
+ "sdmmc-core",
  "simple_logger",
 ]
 
@@ -541,6 +542,15 @@ name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
+
+[[package]]
+name = "sdmmc-core"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "106c7173c2fb5fca54cfe48a42aafe2e9763aa7e4171b2f50c2f98ac9724e881"
+dependencies = [
+ "paste",
+]
 
 [[package]]
 name = "serde_core"
