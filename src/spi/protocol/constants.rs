@@ -1,3 +1,7 @@
+use std::fmt;
+
+use bitflags::Flags;
+
 /// Command and register definitions for eMMC SPI protocol
 use crate::prelude::*;
 
@@ -247,6 +251,7 @@ bitflags::bitflags! {
         const DEVICE_IS_LOCKED  = 1 << 0x19;
         const BLOCK_LENGTH_ERROR= 1 << 0x1D;
         const ADDRESS_MISALIGN  = 1 << 0x1E;
+        const SEQ_ERROR         = 1 << 0x02;
     }
 }
 
@@ -257,7 +262,39 @@ impl ErrorFlags {
     }
 }
 
-/// Status codes
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MmcPresentState(pub u32);
+
+impl MmcPresentState {
+    pub fn app_cmd(&self) -> bool {
+        (self.0 & (1 << 4)) != 0
+    }
+
+    pub fn is_ready_for_data(&self) -> bool {
+        (self.0 & (1 << 7)) != 0
+    }
+
+    pub fn status(&self) -> Option<MmcState> {
+        let status_bits = (self.0 & 0x1E00) >> 9;
+        MmcState::from_bits(status_bits as u8)
+    }
+
+    pub fn error_flags(&self) -> Option<ErrorFlags> {
+        return ErrorFlags::from_bits(self.0);
+    }
+}
+
+impl fmt::Display for MmcPresentState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "MmcPresentState")?;
+        write!(f, "  AppCmd: {}", self.app_cmd())?;
+        write!(f, "  ReadyForData: {}", self.is_ready_for_data())?;
+        write!(f, "  Status: {:?}", self.status())?;
+        write!(f, "  Error flags: {:?}", self.error_flags())
+    }
+}
+
+/// Status codes (Interrupt status)
 pub mod status {
     /// Data ready status - indicates 512 bytes are ready to read from DataFifo
     pub const DATA_READY: u32 = 0x00000020;

@@ -10,6 +10,7 @@ use super::protocol::constants::{
 };
 use crate::error::Error;
 use crate::prelude::*;
+use crate::spi::protocol::constants::MmcPresentState;
 
 // ---------------------------------------------------------------------------
 // SMC fuse hashes (Xbox debug probe)
@@ -283,6 +284,11 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
 
     fn set_xip_output_delay(&mut self, value: u32) -> Result<(), Error> {
         self.write_reg(Register::XipOutputDelay, value)
+    }
+
+    fn get_present_state(&mut self) -> Result<MmcPresentState, Error> {
+        let reg = self.read_reg(Register::PresentState)?;
+        Ok(MmcPresentState(reg))
     }
 
     // -----------------------------------------------------------------------
