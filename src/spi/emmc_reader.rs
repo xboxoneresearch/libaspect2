@@ -533,6 +533,7 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     ///
     /// `buf` must be at least `count * 512` bytes.
     pub fn read_pages(&mut self, start_lba: u32, buf: &mut [u8], count: u32) -> Result<(), Error> {
+        assert_eq!(buf.len() as u32, count * BLOCK_SIZE);
         if count == 0 {
             return Ok(());
         }
@@ -551,15 +552,10 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         // Command Complete
         self.poll_bit(Register::InterruptStatus, 0, true, true, Some(1000))?;
 
-        // PIO: one block at a time
-        for i in 0..count as usize {
-            // Buffer Read Ready (bit 5)
-            self.poll_bit(Register::InterruptStatus, 5, true, true, None)?;
+        // Buffer Read Ready (bit 5) (Note: Intentionally does not clear Buffer Read Ready bit)
+        self.poll_bit(Register::InterruptStatus, 5, true, false, None)?;
 
-            let start = i * 512;
-            self.backend
-                .read_data(Register::DataFifo, &mut buf[start..start + 512])?;
-        }
+        self.backend.read_data(Register::DataFifo, buf)?;
 
         // Transfer Complete (bit 1)
         self.poll_bit(Register::InterruptStatus, 1, true, true, Some(5000))?;
