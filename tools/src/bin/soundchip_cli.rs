@@ -1,8 +1,8 @@
-use std::io::{Read, Write};
+use indicatif::{ProgressIterator, ProgressStyle};
 use libaspect2::Ft4232h;
 use libaspect2::i2c::i2c_bitbang::I2cFtBitbang;
 use libaspect2::i2c::isd9160::{self, Isd9160, Isd9160Sounds};
-use indicatif::{ProgressIterator, ProgressStyle};
+use std::io::{Read, Write};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     simple_logger::init_with_level(log::Level::Warn)?;

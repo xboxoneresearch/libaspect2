@@ -1,5 +1,5 @@
-use embedded_hal::i2c::I2c;
 use crate::prelude::*;
+use embedded_hal::i2c::I2c;
 
 pub const FLASH_SIZE: usize = 0x24400; // 145KB
 pub const READ_CHUNK_SIZE: usize = 64;
@@ -86,8 +86,7 @@ impl From<Isd9160Sounds> for u8 {
     }
 }
 
-pub struct Isd9160<T>
-{
+pub struct Isd9160<T> {
     device: T,
     position: u64,
     write_reg_buf: [u8; 6],
@@ -95,7 +94,7 @@ pub struct Isd9160<T>
 
 impl<T> Isd9160<T>
 where
-    T: I2c
+    T: I2c,
 {
     /// Nuvoton ISD9160 Soundcorder Chip (RF Unit)
     pub const I2C_ADDR: u8 = 0x5A;
@@ -108,7 +107,9 @@ where
         }
     }
 
-    pub fn flash_size(&self) -> usize { FLASH_SIZE }
+    pub fn flash_size(&self) -> usize {
+        FLASH_SIZE
+    }
 
     pub fn read_interrupt(&mut self) -> u16 {
         let cmd: [u8; 1] = [Isd9160Commands::CMD_INTERRUPT_READ.into()];
@@ -184,7 +185,7 @@ where
 #[cfg(feature = "std")]
 impl<T> std::io::Seek for Isd9160<T>
 where
-    T: I2c
+    T: I2c,
 {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
         use std::io::SeekFrom;
@@ -192,19 +193,36 @@ where
             SeekFrom::Start(offset) => offset,
             SeekFrom::End(offset) => {
                 let end = FLASH_SIZE as i64;
-                let np = end.checked_add(offset).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Seek out of bounds"))?;
-                if np < 0 { return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Seek before start")); }
+                let np = end.checked_add(offset).ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "Seek out of bounds")
+                })?;
+                if np < 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "Seek before start",
+                    ));
+                }
                 np as u64
             }
             SeekFrom::Current(offset) => {
                 let cur = self.position as i64;
-                let np = cur.checked_add(offset).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Seek out of bounds"))?;
-                if np < 0 { return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Seek before start")); }
+                let np = cur.checked_add(offset).ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "Seek out of bounds")
+                })?;
+                if np < 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "Seek before start",
+                    ));
+                }
                 np as u64
             }
         };
         if new_pos > FLASH_SIZE as u64 {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Seek past end of flash"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Seek past end of flash",
+            ));
         }
         self.position = new_pos;
         Ok(self.position)
@@ -214,7 +232,7 @@ where
 #[cfg(feature = "std")]
 impl<T> std::io::Read for Isd9160<T>
 where
-    T: I2c
+    T: I2c,
 {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.position >= FLASH_SIZE as u64 {
@@ -228,7 +246,7 @@ where
             let chunk = self.read_data(addr);
             let chunk_start = 0;
             let chunk_end = (to_read - total_read).min(READ_CHUNK_SIZE);
-            buf[total_read..total_read+chunk_end].copy_from_slice(&chunk[chunk_start..chunk_end]);
+            buf[total_read..total_read + chunk_end].copy_from_slice(&chunk[chunk_start..chunk_end]);
             self.position += chunk_end as u64;
             total_read += chunk_end;
         }

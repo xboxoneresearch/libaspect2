@@ -1,6 +1,6 @@
 use crate::prelude::*;
 
-use embedded_hal::{i2c::{ErrorKind, ErrorType, I2c, NoAcknowledgeSource, Operation}};
+use embedded_hal::i2c::{ErrorKind, ErrorType, I2c, NoAcknowledgeSource, Operation};
 use libftd2xx::{BitMode, Ft4232h, FtdiCommon};
 
 const BITMODE: libftd2xx::BitMode = BitMode::SyncBitbang;
@@ -20,7 +20,7 @@ impl I2cFtBitbang {
         Self {
             device,
             gpio_val: I2C_MASK, // Both high
-            gpio_dir: 0, // Both as input (high, open-drain)
+            gpio_dir: 0,        // Both as input (high, open-drain)
         }
     }
 }
@@ -43,64 +43,80 @@ impl I2cFtBitbang {
     /* Drive SDA high (release = input) */
     fn sda_high(&mut self) {
         self.gpio_val |= I2C_SDA;
-        self.gpio_dir &= !I2C_SDA;  // input
+        self.gpio_dir &= !I2C_SDA; // input
         self.gpio_write(self.gpio_val, self.gpio_dir);
     }
 
     /* Drive SDA low */
     fn sda_low(&mut self) {
         self.gpio_val &= !I2C_SDA;
-        self.gpio_dir |= I2C_SDA;   // output
+        self.gpio_dir |= I2C_SDA; // output
         self.gpio_write(self.gpio_val, self.gpio_dir);
     }
 
     /* Set SCL high */
     fn scl_high(&mut self) {
         self.gpio_val |= I2C_SCL;
-        self.gpio_dir &= !I2C_SCL;   // input
+        self.gpio_dir &= !I2C_SCL; // input
         self.gpio_write(self.gpio_val, self.gpio_dir);
     }
 
     /* Set SCL low */
     fn scl_low(&mut self) {
         self.gpio_val &= !I2C_SCL;
-        self.gpio_dir |= I2C_SCL;   // output
+        self.gpio_dir |= I2C_SCL; // output
         self.gpio_write(self.gpio_val, self.gpio_dir);
     }
 
     fn i2c_start(&mut self) {
         //let mut dst = vec![];
         // SDA descending while SCL is HIGH.
-        self.sda_high(); self.scl_high(); self.delay_ns(800);
-        self.sda_low(); self.delay_ns(800);
-        self.scl_low(); self.delay_ns(800);
+        self.sda_high();
+        self.scl_high();
+        self.delay_ns(800);
+        self.sda_low();
+        self.delay_ns(800);
+        self.scl_low();
+        self.delay_ns(800);
     }
 
     fn i2c_stop(&mut self) {
         // SDA rasing while SCL is HIGH.
-        self.sda_low(); self.delay_ns(800);
-        self.scl_high(); self.delay_ns(800);
-        self.sda_high(); self.delay_ns(800);
+        self.sda_low();
+        self.delay_ns(800);
+        self.scl_high();
+        self.delay_ns(800);
+        self.sda_high();
+        self.delay_ns(800);
     }
 
     fn i2c_tx(&mut self, byte: u8) -> bool {
         let mut byte = byte;
         for _ in 0..8 {
-            if byte & 0x80 != 0 { self.sda_high(); } else { self.sda_low() };
+            if byte & 0x80 != 0 {
+                self.sda_high();
+            } else {
+                self.sda_low()
+            };
             byte <<= 1;
             self.delay_ns(400);
-            self.scl_high(); self.delay_ns(800);
-            self.scl_low(); self.delay_ns(400);
+            self.scl_high();
+            self.delay_ns(800);
+            self.scl_low();
+            self.delay_ns(400);
         }
 
         // Release SDA for ACK
-        self.sda_high(); self.delay_ns(400);
-        self.scl_high(); self.delay_ns(800);
+        self.sda_high();
+        self.delay_ns(400);
+        self.scl_high();
+        self.delay_ns(800);
 
         // Sample SDA
         let pins = self.gpio_read();
 
-        self.scl_low(); self.delay_ns(400);
+        self.scl_low();
+        self.delay_ns(400);
         pins & I2C_SDA == 0
     }
 
@@ -110,22 +126,29 @@ impl I2cFtBitbang {
         self.sda_high(); // release SDA
         for _ in 0..8 {
             data <<= 1;
-            self.scl_high(); self.delay_ns(800);
+            self.scl_high();
+            self.delay_ns(800);
 
             let pins = self.gpio_read();
-            if pins & I2C_SDA != 0
-            {
+            if pins & I2C_SDA != 0 {
                 data |= 1;
             }
 
-            self.scl_low(); self.delay_ns(800);
+            self.scl_low();
+            self.delay_ns(800);
         }
 
         // Send ACK/NACK
-        if send_nack { self.sda_high(); } else { self.sda_low() };
+        if send_nack {
+            self.sda_high();
+        } else {
+            self.sda_low()
+        };
         self.delay_ns(400);
-        self.scl_high(); self.delay_ns(800);
-        self.scl_low(); self.delay_ns(400);
+        self.scl_high();
+        self.delay_ns(800);
+        self.scl_low();
+        self.delay_ns(400);
         self.sda_high(); // release
 
         data
@@ -174,8 +197,7 @@ impl I2c for I2cFtBitbang {
                     if !ack {
                         return Err(ErrorKind::NoAcknowledge(NoAcknowledgeSource::Address));
                     }
-                    let resp = self
-                        .i2c_read_bytes(rd.len());
+                    let resp = self.i2c_read_bytes(rd.len());
                     //println!("{resp:?}");
                     rd.copy_from_slice(&resp);
                 }
