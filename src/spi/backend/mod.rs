@@ -67,6 +67,29 @@ pub trait SpiBackend {
     fn initialize(&mut self) -> Result<(), Error>;
 }
 
+/// Raw SPI backend trait for direct JEDEC SPI NOR flash access
+///
+/// Unlike `SpiBackend` (which frames all transfers as register read/writes for the
+/// custom eMMC bridge IC), this trait exposes a plain half-duplex byte stream within
+/// a single CS-asserted frame.  The NOR flash driver uses this to issue JEDEC opcodes
+/// directly without any intermediate controller framing.
+pub trait RawSpiBackend {
+    /// Execute a CS-framed SPI transaction.
+    ///
+    /// Drives the bus as: assert CS → send `cmd` → send `write` → recv `read` → deassert CS.
+    /// All three slices participate in one unbroken CS frame.  Any of them may be empty.
+    fn spi_transaction(&mut self, cmd: &[u8], write: &[u8], read: &mut [u8]) -> Result<(), Error>;
+
+    /// Set the SPI bus clock frequency in kHz.
+    fn set_clock_freq(&mut self, freq_khz: u32) -> Result<(), Error>;
+
+    /// Initialize the SPI interface (GPIO, MPSSE setup, reset sequence).
+    fn initialize(&mut self) -> Result<(), Error>;
+
+    /// Assert and release the hardware reset line.
+    fn reset(&mut self) -> Result<(), Error>;
+}
+
 /// Helper trait for GPIO control (used by backends that need it)
 pub trait GpioControl {
     /// Set chip select state

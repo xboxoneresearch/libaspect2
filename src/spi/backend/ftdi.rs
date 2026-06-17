@@ -5,7 +5,7 @@ use libftd2xx::{Ft4232h, FtdiCommon, FtdiMpsse, MpsseCmdBuilder, MpsseCmdExecuto
 /// This backend provides direct FTDI MPSSE access for maximum performance.
 use std::time::Duration;
 
-use super::{GpioControl, SpiBackend};
+use super::{GpioControl, RawSpiBackend, SpiBackend};
 use crate::error::Error;
 use crate::spi::protocol::constants::{Register, TransferOp};
 
@@ -275,7 +275,7 @@ impl SpiBackend for FtdiBackend {
         self.set_chip_select(true)?;
 
         // Perform reset
-        self.reset()?;
+        SpiBackend::reset(self)?;
 
         // Release chip select
         self.set_chip_select(false)?;
@@ -285,6 +285,81 @@ impl SpiBackend for FtdiBackend {
         self.dev.set_clock(5_000)?;
 
         Ok(())
+    }
+}
+
+/// SPI NOR flash access — raw MSB-first byte stream, Mode 0 (CPOL=0, CPHA=0).
+///
+/// The eMMC bridge IC uses LSB-first framing (`SpiBackend`).  Standard JEDEC NOR
+/// flash devices use MSB-first, so these MPSSE opcodes differ deliberately.
+impl RawSpiBackend for FtdiBackend {
+    fn spi_transaction(&mut self, cmd: &[u8], write: &[u8], read: &mut [u8]) -> Result<(), Error> {
+        let bits = self.get_data_bits();
+        let pins_cs_low = (bits & !SpiPin::SS_N).bits();
+        let pins_cs_high = (bits | SpiPin::SS_N).bits();
+        let dirs = Self::pin_directions().bits();
+
+        // Assert CS
+        let mut packet = MpsseCmdBuilder::new()
+            .set_gpio_lower(pins_cs_low, dirs)
+            .as_slice()
+            .to_vec();
+
+        // Send cmd bytes — MSB first, shift on falling CLK edge (Mode 0)
+        if !cmd.is_empty() {
+            packet.extend_from_slice(
+                MpsseCmdBuilder::new()
+                    .clock_data_out(libftd2xx::ClockDataOut::MsbNeg, cmd)
+                    .as_slice(),
+            );
+        }
+
+        // Send write bytes — MSB first, shift on falling CLK edge (Mode 0)
+        if !write.is_empty() {
+            packet.extend_from_slice(
+                MpsseCmdBuilder::new()
+                    .clock_data_out(libftd2xx::ClockDataOut::MsbNeg, write)
+                    .as_slice(),
+            );
+        }
+
+        // Receive read bytes — MSB first, sample on rising CLK edge (Mode 0)
+        if !read.is_empty() {
+            packet.extend_from_slice(
+                MpsseCmdBuilder::new()
+                    .clock_data_in(libftd2xx::ClockDataIn::MsbPos, read.len())
+                    .as_slice(),
+            );
+        }
+
+        // Deassert CS and flush the USB pipe
+        packet.extend_from_slice(
+            MpsseCmdBuilder::new()
+                .set_gpio_lower(pins_cs_high, dirs)
+                .send_immediate()
+                .as_slice(),
+        );
+
+        self.dev.send(&packet)?;
+
+        if !read.is_empty() {
+            self.dev.recv(read)?;
+        }
+
+        Ok(())
+    }
+
+    fn set_clock_freq(&mut self, freq_khz: u32) -> Result<(), Error> {
+        self.dev.set_clock(freq_khz * 1000)?;
+        Ok(())
+    }
+
+    fn initialize(&mut self) -> Result<(), Error> {
+        <Self as SpiBackend>::initialize(self)
+    }
+
+    fn reset(&mut self) -> Result<(), Error> {
+        <Self as SpiBackend>::reset(self)
     }
 }
 

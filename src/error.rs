@@ -46,4 +46,7 @@ pub enum Error {
 
     #[error("Operation timed out")]
     Timeout,
+
+    #[error("SPI NOR flash returned an invalid JEDEC ID (0x00 or 0xFF)")]
+    NorInvalidJedecId,
 }

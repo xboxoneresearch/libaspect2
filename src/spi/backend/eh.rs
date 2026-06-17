@@ -5,7 +5,7 @@
 
 use embedded_hal::{delay::DelayNs, digital::OutputPin, spi::SpiDevice};
 
-use super::{GpioControl, SpiBackend};
+use super::{GpioControl, RawSpiBackend, SpiBackend};
 use crate::error::Error;
 use crate::prelude::*;
 use crate::spi::protocol::constants::{Register, TransferOp};
@@ -86,6 +86,37 @@ where
     }
 }
 
+impl<SPI, RST, EN, D> RawSpiBackend for Eh1SpiBackend<SPI, RST, EN, D>
+where
+    SPI: SpiDevice,
+    RST: OutputPin,
+    EN: OutputPin,
+    D: DelayNs,
+{
+    fn spi_transaction(&mut self, cmd: &[u8], write: &[u8], read: &mut [u8]) -> Result<(), Error> {
+        use embedded_hal::spi::Operation;
+        self.spi
+            .transaction(&mut [
+                Operation::Write(cmd),
+                Operation::Write(write),
+                Operation::Read(read),
+            ])
+            .map_err(|_| Error::SpiError)
+    }
+
+    fn set_clock_freq(&mut self, _freq_khz: u32) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn initialize(&mut self) -> Result<(), Error> {
+        <Self as SpiBackend>::initialize(self)
+    }
+
+    fn reset(&mut self) -> Result<(), Error> {
+        <Self as SpiBackend>::reset(self)
+    }
+}
+
 impl<SPI, RST, EN, D> SpiBackend for Eh1SpiBackend<SPI, RST, EN, D>
 where
     SPI: SpiDevice,
@@ -144,7 +175,7 @@ where
         self.set_reset_internal(false)?;
 
         // Perform reset sequence
-        self.reset()?;
+        SpiBackend::reset(self)?;
 
         Ok(())
     }

@@ -54,7 +54,7 @@ impl std::fmt::Display for SmcFuses {
 }
 
 /// EmmcReader — the controller
-pub struct EmmcReader<B: SpiBackend, C: ClockTrait + DelayNs + Clone> {
+pub struct EmmcFlash<B: SpiBackend, C: ClockTrait + DelayNs + Clone> {
     pub backend: B,
     internal_clock: C,
     initialized: bool,
@@ -63,7 +63,7 @@ pub struct EmmcReader<B: SpiBackend, C: ClockTrait + DelayNs + Clone> {
     cid: [u32; 4],
 }
 
-impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
+impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcFlash<B, C> {
     /// Create a new reader with the specified backend
     pub fn new(backend: B, clock_impl: C) -> Self {
         Self {
@@ -822,7 +822,7 @@ mod tests {
     #[test]
     fn test_read_write_register() {
         let backend = MockBackend::new();
-        let mut reader = EmmcReader::new(backend, MockClock);
+        let mut reader = EmmcFlash::new(backend, MockClock);
 
         reader.write_reg(Register::Argument, 0xDEAD_BEEF).unwrap();
         let value = reader.read_reg(Register::Argument).unwrap();
@@ -832,7 +832,7 @@ mod tests {
     #[test]
     fn test_sanity_check() {
         let backend = MockBackend::new();
-        let mut reader = EmmcReader::new(backend, MockClock);
+        let mut reader = EmmcFlash::new(backend, MockClock);
         reader.sanity_check().unwrap();
     }
 }
