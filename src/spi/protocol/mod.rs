@@ -4,4 +4,3 @@
 //! depending on any specific hardware backend (FTDI, embedded-hal, etc.)
 pub mod constants;
 pub mod nor;
-pub mod transaction;

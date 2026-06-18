@@ -1,14 +1,17 @@
 use std::fmt;
 
-use bitflags::Flags;
-
 /// Command and register definitions for eMMC SPI protocol
 use crate::prelude::*;
 
 pub const RCA: u32 = 10;
 pub const RCA_ARG: u32 = RCA << 16;
-pub const BLOCK_SIZE: u32 = 512;
+pub const BLOCK_SIZE: usize = 512;
+pub const EXT_CSD_SIZE: usize = 512;
 pub const BASE_CLOCK_MHZ: f64 = 196.875;
+
+// NOR
+pub const NOR_PAGE: usize = 256;
+pub const NOR_SECTOR: usize = 4096;
 
 /// SPI Command type (2 bits)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,27 +155,30 @@ pub mod commands {
     use super::{make_cmd, responses::*};
 
     // Non-data commands
-    pub const CMD0: u32 = make_cmd(0, RESP_NONE); // GO_IDLE
-    pub const CMD1: u32 = make_cmd(1, RESP_R3); // SEND_OP_COND
-    pub const CMD2: u32 = make_cmd(2, RESP_R2); // ALL_SEND_CID
-    pub const CMD3: u32 = make_cmd(3, RESP_R1); // SET_RCA
-    pub const CMD6: u32 = make_cmd(6, RESP_R1B); // SWITCH
-    pub const CMD7_SEL: u32 = make_cmd(7, RESP_R1); // SELECT_CARD
-    pub const CMD7_DESEL: u32 = make_cmd(7, 0x18); // DESELECT_CARD
-    pub const CMD13: u32 = make_cmd(13, RESP_R1); // SEND_STATUS
-    pub const CMD16: u32 = make_cmd(16, RESP_R1); // SET_BLOCKLEN
-    pub const CMD35: u32 = make_cmd(35, RESP_R1); // ERASE_GROUP_START
-    pub const CMD36: u32 = make_cmd(36, RESP_R1); // ERASE_GROUP_END
-    pub const CMD38: u32 = make_cmd(38, RESP_R1); // ERASE
+    pub const CMD0_GO_IDLE: u32 = make_cmd(0, RESP_NONE);
+    pub const CMD1_SEND_OP_COND: u32 = make_cmd(1, RESP_R3);
+    pub const CMD2_ALL_SEND_CID: u32 = make_cmd(2, RESP_R2);
+    pub const CMD3_SET_RCA: u32 = make_cmd(3, RESP_R1);
+    pub const CMD6_SWITCH: u32 = make_cmd(6, RESP_R1B);
+    pub const CMD7_SELECT_CARD: u32 = make_cmd(7, RESP_R1);
+    pub const CMD7_DESELECT_CARD: u32 = make_cmd(7, 0x18);
+    pub const CMD9_SEND_CSD: u32 = make_cmd(9, RESP_R2); // single read
+    pub const CMD12_STOP_READ: u32 = make_cmd(12, RESP_R1);
+    pub const CMD12_STOP_WRITE: u32 = make_cmd(12, RESP_R1B);
+    pub const CMD13_SEND_STATUS: u32 = make_cmd(13, RESP_R1);
+    pub const CMD16_SET_BLOCKLEN: u32 = make_cmd(16, RESP_R1);
+    pub const CMD35_ERASE_GROUP_START: u32 = make_cmd(35, RESP_R1);
+    pub const CMD36_ERASE_GROUP_END: u32 = make_cmd(36, RESP_R1);
+    pub const CMD38_ERASE: u32 = make_cmd(38, RESP_R1);
 
     // Data transfer commands: CMD Register (upper 16) | Transfer Mode (lower 16)
     //   Transfer Mode bits: [5] multi-block, [4] read-direction, [2] auto-CMD12,
     //                       [1] block-count-enable
-    pub const CMD8_EXT_CSD: u32 = 0x083A_0010; // SEND_EXT_CSD (single read)
-    pub const CMD17_READ: u32 = 0x113A_0010; // READ_SINGLE_BLOCK
-    pub const CMD18_READ: u32 = 0x123A_0036; // READ_MULTIPLE_BLOCK
-    pub const CMD24_WRITE: u32 = 0x183A_0000; // WRITE_BLOCK
-    pub const CMD25_WRITE: u32 = 0x193A_0026; // WRITE_MULTIPLE_BLOCK
+    pub const CMD8_SEND_EXT_CSD: u32 = 0x083A_0010; // single read
+    pub const CMD17_READ_SINGLE_BLOCK: u32 = 0x113A_0010;
+    pub const CMD18_READ_MULTIPLE_BLOCK: u32 = 0x123A_0036;
+    pub const CMD24_WRITE_BLOCK: u32 = 0x183A_0000;
+    pub const CMD25_WRITE_MULTIPLE_BLOCK: u32 = 0x193A_0026;
 }
 
 /// Erase type
@@ -236,6 +242,546 @@ impl MmcState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManufacturerId {
+    Samsung,
+    Hynix,
+    Toshiba,
+    Unknown(u8),
+}
+
+impl ManufacturerId {
+    fn from_mid(mid: u8) -> Self {
+        match mid {
+            0x15 => Self::Samsung,
+            0x90 => Self::Hynix,
+            0x11 => Self::Toshiba,
+            x => Self::Unknown(x),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EmmcCid {
+    pub mid: u8,
+    pub manufacturer: ManufacturerId,
+    pub cbx: u8,
+    pub pnm: String,
+    pub prv: u8,
+    pub psn: u32,
+}
+
+impl EmmcCid {
+    pub fn from_response(resp: [u32; 4]) -> Self {
+        let r0 = resp[0];
+        let r1 = resp[1];
+        let r2 = resp[2];
+        let r3 = resp[3];
+
+        let mid = ((r3 >> 16) & 0xff) as u8;
+        let cbx = ((r3 >> 8) & 0x03) as u8;
+
+        let pnm_bytes = [
+            (r2 >> 24) as u8,
+            (r2 >> 16) as u8,
+            (r2 >> 8) as u8,
+            r2 as u8,
+            (r1 >> 24) as u8,
+            (r1 >> 16) as u8,
+        ];
+
+        let pnm = pnm_bytes
+            .into_iter()
+            .map(char::from)
+            .collect::<String>();
+
+        let prv = ((r1 >> 8) & 0xff) as u8;
+
+        let psn =
+            ((r1 & 0xff) << 24) |
+            (((r0 >> 24) & 0xff) << 16) |
+            (((r0 >> 16) & 0xff) << 8) |
+            ((r0 >> 8) & 0xff);
+
+        Self {
+            mid,
+            manufacturer: ManufacturerId::from_mid(mid),
+            cbx,
+            pnm,
+            prv,
+            psn,
+        }
+    }
+
+    pub fn hw_revision(&self) -> u8 {
+        self.prv >> 4
+    }
+
+    pub fn fw_revision(&self) -> u8 {
+        self.prv & 0x0f
+    }
+}
+
+impl fmt::Display for EmmcCid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Manufacturer : {:?}", self.manufacturer)?;
+        writeln!(f, "MID          : 0x{:02X}", self.mid)?;
+        writeln!(f, "CBX          : {}", self.cbx)?;
+        writeln!(f, "Product      : {}", self.pnm)?;
+        writeln!(
+            f,
+            "Revision     : {}.{} (0x{:02X})",
+            self.hw_revision(),
+            self.fw_revision(),
+            self.prv
+        )?;
+        writeln!(f, "Serial       : 0x{:08X}", self.psn)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EmmcCsd {
+    raw: u128,
+    /// CSD_STRUCTURE
+    pub csd_structure: u8,
+    /// SPEC_VERS
+    pub spec_vers: u8,
+    /// Command classes
+    pub ccc: u16,
+    /// Maximum transfer speed field
+    pub tran_speed: u8,
+    /// Read block length (2^n)
+    pub read_bl_len: u8,
+    /// Write block length (2^n)
+    pub write_bl_len: u8,
+}
+
+impl EmmcCsd {
+    pub fn from_response(resp: [u32; 4]) -> Self {
+        // NOTE / IMPORTANT: Assemble 4x u32 into u128 value and shift up by 1 byte
+        let csd =
+              (((resp[3] as u128) << 96)
+            | ((resp[2] as u128) << 64)
+            | ((resp[1] as u128) << 32)
+            |  (resp[0] as u128))
+            << 8;
+
+        fn bits(v: u128, hi: u32, lo: u32) -> u32 {
+            ((v >> lo) & ((1u128 << (hi - lo + 1)) - 1)) as u32
+        }
+        
+        Self {
+            raw: csd,
+            csd_structure: bits(csd,127,126) as u8,
+            spec_vers: bits(csd,125,122) as u8,
+            tran_speed: bits(csd,103,96) as u8,
+            ccc: bits(csd,95,84) as u16,
+            read_bl_len: bits(csd,83,80) as u8,
+            write_bl_len: bits(csd,25,22) as u8,
+        }
+    }
+
+    pub fn as_u128(&self) -> u128 {
+        self.raw
+    }
+
+    pub fn read_block_size(&self) -> u32 {
+        1u32 << self.read_bl_len
+    }
+
+    pub fn write_block_size(&self) -> u32 {
+        1u32 << self.write_bl_len
+    }
+
+    pub fn tran_speed_hz(&self) -> Option<u32> {
+        // JEDEC/MMC TRAN_SPEED decoding
+        const MULT: [u32; 16] = [
+            0, 10, 12, 13, 15, 20, 26, 30,
+            35, 40, 45, 52, 55, 60, 70, 80,
+        ];
+
+        const UNIT: [u32; 8] = [
+            100_000,
+            1_000_000,
+            10_000_000,
+            100_000_000,
+            0, 0, 0, 0,
+        ];
+
+        let mult = MULT[(self.tran_speed >> 3) as usize];
+        let unit = UNIT[(self.tran_speed & 0x7) as usize];
+
+        if mult == 0 || unit == 0 {
+            None
+        } else {
+            Some(mult * unit / 10)
+        }
+    }
+}
+
+impl std::fmt::Display for EmmcCsd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "CSD (RAW: 0x{:032X})", self.raw)?;
+        writeln!(f, "CSD_STRUCTURE : {}", self.csd_structure)?;
+        writeln!(f, "SPEC_VERS     : {}", self.spec_vers)?;
+        writeln!(f, "CCC           : 0x{:03X}", self.ccc)?;
+        writeln!(f, "TRAN_SPEED    : 0x{:02X}", self.tran_speed)?;
+
+        if let Some(hz) = self.tran_speed_hz() {
+            writeln!(f, "MAX_SPEED     : {} Hz", hz)?;
+        }
+
+        writeln!(
+            f,
+            "READ_BL_LEN   : {} ({} bytes)",
+            self.read_bl_len,
+            self.read_block_size()
+        )?;
+
+        writeln!(
+            f,
+            "WRITE_BL_LEN   : {} ({} bytes)",
+            self.write_bl_len,
+            self.write_block_size()
+        )?;
+
+        Ok(())
+    }
+}
+
+// EXT_CSD field offsets
+// Capacity / geometry
+pub const EXT_CSD_DATA_SECTOR_SIZE: usize       =  61;
+pub const EXT_CSD_USE_NATIVE_SECTOR: usize      =  62;
+pub const EXT_CSD_NATIVE_SECTOR_SIZE: usize     =  63;
+pub const EXT_CSD_SEC_COUNT: usize              = 212; // [215:212] Sector count (LE u32)
+
+// Speed / bus configuration
+pub const EXT_CSD_BUS_WIDTH: usize              = 183;
+pub const EXT_CSD_HS_TIMING: usize              = 185;
+pub const EXT_CSD_POWER_CLASS: usize            = 187;
+pub const EXT_CSD_CMD_SET_REV: usize            = 189;
+pub const EXT_CSD_CMD_SET: usize                = 191;
+pub const EXT_CSD_REV: usize                    = 192;
+pub const EXT_CSD_CSD_STRUCTURE: usize          = 194;
+pub const EXT_CSD_DEVICE_TYPE: usize            = 196;
+pub const EXT_CSD_DRIVER_STRENGTH: usize        = 197;
+
+// Partitioning / boot
+pub const EXT_CSD_SEC_FEATURE_SUPPORT: usize    = 231;
+pub const EXT_CSD_BOOT_SIZE_MULT: usize         = 226;
+pub const EXT_CSD_HC_ERASE_GRP_SIZE: usize      = 224;
+pub const EXT_CSD_HC_WP_GRP_SIZE: usize         = 221;
+
+pub const EXT_CSD_RPMB_SIZE_MULT: usize         = 168;
+pub const EXT_CSD_PARTITION_CONFIG: usize       = 179;
+pub const EXT_CSD_BOOT_BUS_CONDITIONS: usize    = 177;
+pub const EXT_CSD_ERASE_GROUP_DEF: usize        = 175;
+pub const EXT_CSD_BOOT_WP: usize                = 173;
+pub const EXT_CSD_RST_N_FUNCTION: usize         = 162;
+pub const EXT_CSD_PARTITIONING_SUPPORT: usize   = 160;
+pub const EXT_CSD_PARTITIONS_ATTRIBUTE: usize   = 156;
+pub const EXT_CSD_GP_SIZE_MULT: usize           = 143;
+
+// Cache
+pub const EXT_CSD_CACHE_SIZE: usize             = 249; // [252:249] LE u32
+pub const EXT_CSD_CACHE_CTRL: usize             = 33;
+
+// Command queue (eMMC 5.x)
+pub const EXT_CSD_CMDQ_MODE_EN: usize           = 15;
+pub const EXT_CSD_CMDQ_DEPTH: usize             = 307;
+
+// Lifetime / health
+pub const EXT_CSD_PRE_EOL_INFO: usize           = 267;
+pub const EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_A: usize = 268;
+pub const EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_B: usize = 269;
+
+#[derive(Debug, Clone)]
+pub struct ExtCsd {
+    pub revision: u8,
+    pub device_type: u8,
+    pub bus_width: u8,
+    pub hs_timing: u8,
+
+    pub sec_count: u32,
+    pub data_sector_size: u8,
+    pub use_native_sector: u8,
+    pub native_sector_size: u8,
+
+    pub boot_size_mult: u8,
+    pub rpmb_size_mult: u8,
+
+    pub partition_config: u8,
+
+    pub cache_size: u32,
+    pub cache_ctrl: u8,
+
+    pub pre_eol_info: u8,
+    pub life_time_a: u8,
+    pub life_time_b: u8,
+
+    pub raw: [u8; 512],
+}
+
+impl ExtCsd {
+    pub fn from_bytes(raw: [u8; 512]) -> Self {
+        Self {
+            revision: raw[EXT_CSD_REV],
+            device_type: raw[EXT_CSD_DEVICE_TYPE],
+            bus_width: raw[EXT_CSD_BUS_WIDTH],
+            hs_timing: raw[EXT_CSD_HS_TIMING],
+
+            sec_count: u32::from_le_bytes(
+                raw[EXT_CSD_SEC_COUNT..EXT_CSD_SEC_COUNT + 4]
+                    .try_into()
+                    .unwrap()
+            ),
+            data_sector_size: raw[EXT_CSD_DATA_SECTOR_SIZE],
+            use_native_sector: raw[EXT_CSD_USE_NATIVE_SECTOR],
+            native_sector_size: raw[EXT_CSD_NATIVE_SECTOR_SIZE],
+
+            boot_size_mult: raw[EXT_CSD_BOOT_SIZE_MULT],
+            rpmb_size_mult: raw[EXT_CSD_RPMB_SIZE_MULT],
+
+            partition_config: raw[EXT_CSD_PARTITION_CONFIG],
+
+            cache_size: u32::from_le_bytes(
+                raw[EXT_CSD_CACHE_SIZE..EXT_CSD_CACHE_SIZE + 4]
+                    .try_into()
+                    .unwrap(),
+            ),
+
+            cache_ctrl: raw[EXT_CSD_CACHE_CTRL],
+
+            pre_eol_info: raw[EXT_CSD_PRE_EOL_INFO],
+            life_time_a: raw[EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_A],
+            life_time_b: raw[EXT_CSD_DEVICE_LIFE_TIME_EST_TYP_B],
+
+            raw,
+        }
+    }
+
+    pub fn sector_count(&self) -> u32 {
+        self.sec_count
+    }
+    
+    pub fn capacity_bytes(&self) -> u64 {
+        self.sec_count as u64 * 512
+    }
+
+    pub fn capacity_gib(&self) -> f64 {
+        self.capacity_bytes() as f64 / (1024.0 * 1024.0 * 1024.0)
+    }
+
+    pub fn boot_partition_size_bytes(&self) -> u64 {
+        self.boot_size_mult as u64 * 128 * 1024
+    }
+
+    pub fn rpmb_size_bytes(&self) -> u64 {
+        self.rpmb_size_mult as u64 * 128 * 1024
+    }
+
+    pub fn revision_name(&self) -> &'static str {
+        match self.revision {
+            0 => "obsolete",
+            1 => "MMC 4.0",
+            2 => "MMC 4.1",
+            3 => "MMC 4.2",
+            5 => "MMC 4.41",
+            6 => "MMC 4.5",
+            7 => "MMC 5.0",
+            8 => "MMC 5.1",
+            _ => "unknown",
+        }
+    }
+
+    pub fn hs_timing_name(&self) -> &'static str {
+        match self.hs_timing {
+            0 => "Legacy",
+            1 => "High Speed",
+            2 => "HS200",
+            3 => "HS400",
+            _ => "Unknown",
+        }
+    }
+
+    pub fn device_type_strings(&self) -> Vec<&'static str> {
+        let mut v = Vec::new();
+
+        let dt = self.device_type;
+
+        if dt & (1 << 0) != 0 {
+            v.push("HS 26 MHz");
+        }
+
+        if dt & (1 << 1) != 0 {
+            v.push("HS 52 MHz");
+        }
+
+        if dt & (1 << 2) != 0 {
+            v.push("DDR52 @1.8V/3V");
+        }
+
+        if dt & (1 << 3) != 0 {
+            v.push("DDR52 @1.2V");
+        }
+
+        if dt & (1 << 4) != 0 {
+            v.push("HS200 @1.8V");
+        }
+
+        if dt & (1 << 5) != 0 {
+            v.push("HS200 @1.2V");
+        }
+
+        if dt & (1 << 6) != 0 {
+            v.push("HS400 @1.8V");
+        }
+
+        if dt & (1 << 7) != 0 {
+            v.push("HS400 @1.2V");
+        }
+
+        v
+    }
+}
+
+impl fmt::Display for ExtCsd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "EXT_CSD Revision  : {}", self.revision_name())?;
+        writeln!(
+            f,
+            "Capacity          : {:.2} GiB",
+            self.capacity_gib()
+        )?;
+        writeln!(
+            f,
+            "Sector Count      : {}",
+            self.sec_count
+        )?;
+        writeln!(
+            f,
+            "Data Sector Size  : {}",
+            self.data_sector_size
+        )?;
+        writeln!(
+            f,
+            "Use native Sector : {}",
+            self.use_native_sector
+        )?;
+        writeln!(
+            f,
+            "Native Sector Size: {}",
+            self.native_sector_size
+        )?;
+        writeln!(
+            f,
+            "Boot Partition    : {} KiB",
+            self.boot_partition_size_bytes() / 1024
+        )?;
+        writeln!(
+            f,
+            "RPMB Size         : {} KiB",
+            self.rpmb_size_bytes() / 1024
+        )?;
+        writeln!(
+            f,
+            "Timing Mode       : {}",
+            self.hs_timing_name()
+        )?;
+        writeln!(
+            f,
+            "Bus Width         : 0x{:02X}",
+            self.bus_width
+        )?;
+        writeln!(
+            f,
+            "Partition Config  : 0x{:02X}",
+            self.partition_config
+        )?;
+        writeln!(
+            f,
+            "Cache Size        : {} KiB",
+            self.cache_size / 1024
+        )?;
+        writeln!(
+            f,
+            "Cache Enabled     : {}",
+            self.cache_ctrl != 0
+        )?;
+        writeln!(
+            f,
+            "Device Type       : {}",
+            self.device_type_strings().join(", ")
+        )?;
+        writeln!(
+            f,
+            "PRE_EOL_INFO      : 0x{:02X}",
+            self.pre_eol_info
+        )?;
+        writeln!(
+            f,
+            "LIFE_TIME_A       : 0x{:02X}",
+            self.life_time_a
+        )?;
+        writeln!(
+            f,
+            "LIFE_TIME_B       : 0x{:02X}",
+            self.life_time_b
+        )
+    }
+}
+
+/// eMMC card info assembled from CID + CSD + EXT_CSD.
+#[derive(Debug, Clone)]
+pub struct MmcInfo {
+    pub cid: EmmcCid,
+    pub csd: EmmcCsd,
+    pub ext_csd: ExtCsd,
+}
+
+impl MmcInfo {
+    pub fn sector_count(&self) -> u32 {
+        self.ext_csd.sector_count()
+    }
+
+    pub fn capacity_bytes(&self) -> u64 {
+        self.sector_count() as u64 * 512
+    }
+
+    pub fn capacity_mb(&self) -> u64 {
+        self.capacity_bytes() / (1024 * 1024)
+    }
+
+    pub fn boot_area_bytes(&self) -> u64 {
+        self.ext_csd.boot_partition_size_bytes()
+    }
+
+    pub fn rpmb_bytes(&self) -> u64 {
+        self.ext_csd.rpmb_size_bytes()
+    }
+
+    pub fn bus_width(&self) -> u8 {
+        self.ext_csd.bus_width
+    }
+
+    pub fn hs_timing(&self) -> u8 {
+        self.ext_csd.hs_timing
+    }
+
+    pub fn device_type(&self) -> u8 {
+        self.ext_csd.device_type
+    }
+}
+
+impl std::fmt::Display for MmcInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{}", self.cid)?;
+        writeln!(f, "{}", self.csd)?;
+        writeln!(f, "{}", self.ext_csd)
+    }
+}
+
 /// SPI Error flags (from status registers)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ErrorFlags(u32);
@@ -294,32 +840,36 @@ impl fmt::Display for MmcPresentState {
     }
 }
 
-/// Status codes (Interrupt status)
-pub mod status {
-    /// Data ready status - indicates 512 bytes are ready to read from DataFifo
-    pub const DATA_READY: u32 = 0x00000020;
+// Interrupts
 
-    /// Command accepted status - indicates command was accepted and processing started
-    pub const CMD_ACCEPTED: u32 = 0x00000021;
+/// Status bits (Interrupt status)
+pub mod status {
+    /// Command/Busy status - written to initiate operations
+    pub const CMD_COMPLETE: u8 = 0;
 
     /// Transfer complete status - indicates block transfer is finished
-    pub const TRANSFER_COMPLETE: u32 = 0x00000002;
+    pub const TRANSFER_COMPLETE: u8 = 1;
 
-    /// Command/Busy status - written to initiate operations
-    pub const CMD_BUSY: u32 = 0x00000001;
-
-    /// Status clear/reset value - written to clear status after acknowledgement
-    pub const STATUS_CLEAR: u32 = 0xFFFFFFFF;
+    /// Data ready status - indicates 512 bytes can be written to DataFifo
+    pub const DATA_WRITE_READY: u8 = 4;
+    
+    /// Data ready status - indicates 512 bytes are ready to read from DataFifo
+    pub const DATA_READ_READY: u8 = 5;
 }
 
-/// Transfer configuration values from protocol trace
-pub mod transfer_config {
-    /// Standard transfer configuration for 512-byte page reads
-    pub const PAGE_READ: u32 = 0x113A0010;
-}
-
+pub const INTERRUPT_STATUS_EN: u32 = 0x1FFF_0033;
+pub const INTERRUPT_SIGNAL_EN: u32 = 0x1FFF_0033;
+pub const CLEAR_INTERRUPTS: u32 = 0xFFFF_FFFF;
 /// Interrupt Error flag
 pub const ERROR_INTERRUPT: u32 = 1 << 15;
+
+// Clock
+pub const CLK_SW_RESET_CMD_DAT: u32 = 0x0600_0000;
+
+// Timings
+pub const TIMING_HS: u32 = 0x03B9_0100;
+pub const TIMING_HS200: u32 = 0x03B9_0200;
+pub const TIMING_LEGACY: u32 = 0x03B9_0000;
 
 #[cfg(test)]
 mod tests {

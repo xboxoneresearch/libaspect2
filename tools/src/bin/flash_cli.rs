@@ -1,3 +1,4 @@
+use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use libaspect2::prelude::*;
@@ -5,20 +6,15 @@ use libaspect2::spi::backend::ftdi::FtdiBackend;
 use libaspect2::spi::backend::{RawSpiBackend, SpiBackend};
 use libaspect2::spi::emmc_flash::EmmcFlash;
 use libaspect2::spi::nor_flash::NorFlash;
-use libaspect2::spi::protocol::nor::JedecId;
-use sdmmc_core::register::{Cid, ExtCsd};
+use libaspect2::spi::protocol::constants::{BLOCK_SIZE, NOR_PAGE, NOR_SECTOR};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
 // eMMC
-const EMMC_MAX_PAGES: u32 = 0x9E0000;
-const EMMC_BLOCK: usize = 512;
-const EMMC_CHUNK: u32 = 128; // pages per multi-block transfer
+const EMMC_CHUNK: usize = 128; // pages per multi-block transfer
 
 // SPI NOR
-const NOR_PAGE: usize = 256;
-const NOR_SECTOR: usize = 4096;
 const NOR_READ_CHUNK: usize = 64 * 1024;
 
 // ---------------------------------------------------------------------------
@@ -41,11 +37,6 @@ fn pb(total: u64) -> ProgressBar {
             .unwrap(),
     );
     bar
-}
-
-fn nor_capacity(id: &JedecId) -> Option<u64> {
-    let code = id.device[1];
-    (code != 0 && code != 0xFF).then(|| 1u64 << code)
 }
 
 // ---------------------------------------------------------------------------
@@ -111,35 +102,24 @@ fn run_emmc(args: EmmcArgs, device: &str) -> anyhow::Result<()> {
             println!("Initializing eMMC at {:.0} MHz...", args.freq);
             flash.init_at_freq(args.freq)?;
 
-            let mut ext_csd = [0u8; 512];
-            flash.read_ext_csd(&mut ext_csd)?;
-            ext_csd.reverse();
+            let mmc_info = flash.get_mmc_info()
+                .context("Failed to fetch MMC info")?;
 
-            let cid = flash.cid().clone();
-            let cid_bytes: Vec<u8> = [
-                cid[3].to_be_bytes(),
-                cid[2].to_be_bytes(),
-                cid[1].to_be_bytes(),
-                cid[0].to_be_bytes(),
-            ]
-            .as_flattened()
-            .to_vec();
-
-            println!("CID:     {:?}", Cid::try_from_bytes(&cid_bytes));
-            println!("EXT_CSD: {:?}", ExtCsd::try_from_inner(ext_csd));
+            println!("{mmc_info}");
         }
 
         EmmcOp::Read { file, offset, length } => {
             println!("Initializing eMMC at {:.0} MHz...", args.freq);
             flash.init_at_freq(args.freq)?;
 
-            let start_page = offset / EMMC_BLOCK as u64;
+            let mmc_info = flash.get_mmc_info().context("Failed to fetch MMC info")?;
+            let start_page = offset / BLOCK_SIZE as u64;
             let page_count = if length == 0 {
-                EMMC_MAX_PAGES as u64 - start_page
+                mmc_info.sector_count() as u64 - start_page
             } else {
-                length / EMMC_BLOCK as u64
+                length / BLOCK_SIZE as u64
             };
-            let total = page_count * EMMC_BLOCK as u64;
+            let total = page_count * BLOCK_SIZE as u64;
 
             println!(
                 "Reading {:.2} GiB ({page_count} pages) → {:?}",
@@ -148,25 +128,25 @@ fn run_emmc(args: EmmcArgs, device: &str) -> anyhow::Result<()> {
             );
 
             let mut out = File::create(&file)?;
-            let mut buf = vec![0u8; EMMC_CHUNK as usize * EMMC_BLOCK];
+            let mut buf = vec![0u8; EMMC_CHUNK as usize * BLOCK_SIZE];
             let bar = pb(total);
-            let mut page = start_page as u32;
+            let mut page = start_page;
 
-            while page < (start_page + page_count) as u32 {
-                let remaining = ((start_page + page_count) - page as u64) as u32;
+            while page < (start_page + page_count) {
+                let remaining = ((start_page + page_count) - page as u64) as usize;
                 let count = remaining.min(EMMC_CHUNK);
-                let bytes = count as usize * EMMC_BLOCK;
+                let bytes = count as usize * BLOCK_SIZE;
 
-                flash.read_pages(page, &mut buf[..bytes], count)?;
+                flash.read_pages(page as u32, &mut buf[..bytes], count)?;
                 out.write_all(&buf[..bytes])?;
                 bar.inc(bytes as u64);
-                page += count;
+                page += count as u64;
             }
             bar.finish_with_message("done");
         }
 
         EmmcOp::Write { file, offset } => {
-            if offset % EMMC_BLOCK as u64 != 0 {
+            if offset % BLOCK_SIZE as u64 != 0 {
                 anyhow::bail!("Offset {offset:#X} is not 512-byte aligned");
             }
 
@@ -176,12 +156,12 @@ fn run_emmc(args: EmmcArgs, device: &str) -> anyhow::Result<()> {
             let mut f = File::open(&file)?;
             let total = f.metadata()?.len();
 
-            if total % EMMC_BLOCK as u64 != 0 {
-                anyhow::bail!("File size {total} is not a multiple of {EMMC_BLOCK} bytes");
+            if total % BLOCK_SIZE as u64 != 0 {
+                anyhow::bail!("File size {total} is not a multiple of {BLOCK_SIZE} bytes");
             }
 
-            let start_page = (offset / EMMC_BLOCK as u64) as u32;
-            let total_pages = (total / EMMC_BLOCK as u64) as u32;
+            let start_page = offset / BLOCK_SIZE as u64;
+            let total_pages = total / BLOCK_SIZE as u64;
 
             println!(
                 "Writing {:.2} GiB ({total_pages} pages) from {:?} at page {start_page}",
@@ -189,16 +169,16 @@ fn run_emmc(args: EmmcArgs, device: &str) -> anyhow::Result<()> {
                 file
             );
 
-            let mut buf = vec![0u8; EMMC_CHUNK as usize * EMMC_BLOCK];
+            let mut buf = vec![0u8; EMMC_CHUNK * BLOCK_SIZE as usize];
             let bar = pb(total);
-            let mut page = 0u32;
+            let mut page = 0u64;
 
             while page < total_pages {
-                let count = (total_pages - page).min(EMMC_CHUNK);
-                let bytes = count as usize * EMMC_BLOCK;
+                let count = (total_pages - page).min(EMMC_CHUNK as u64);
+                let bytes = count as usize * BLOCK_SIZE;
 
                 f.read_exact(&mut buf[..bytes])?;
-                flash.write_pages(start_page + page, &buf[..bytes], count)?;
+                flash.write_pages((start_page + page) as u32, &buf[..bytes], count as usize)?;
                 bar.inc(bytes as u64);
                 page += count;
             }
@@ -260,16 +240,13 @@ fn run_nor(args: NorArgs, device: &str) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to open FTDI device {:?}: {e}", device))?;
     let mut flash = NorFlash::new(backend, StdClock);
 
-    let id = flash
+    let jedec_id = flash
         .init()
         .map_err(|e| anyhow::anyhow!("NOR init failed: {e}"))?;
     flash.backend.set_clock_freq(args.spi_clock)?;
 
-    println!(
-        "JEDEC ID: manufacturer={:#04X}  device={:#04X} {:#04X}",
-        id.manufacturer, id.device[0], id.device[1]
-    );
-    if let Some(cap) = nor_capacity(&id) {
+    println!("{jedec_id}");
+    if let Some(cap) = jedec_id.capacity_bytes() {
         println!("Capacity:  {} KiB ({} MiB)", cap / 1024, cap / (1024 * 1024));
     }
 
@@ -278,7 +255,7 @@ fn run_nor(args: NorArgs, device: &str) -> anyhow::Result<()> {
 
         NorOp::Read { file, offset, length } => {
             let length = if length == 0 {
-                nor_capacity(&id)
+                jedec_id.capacity_bytes()
                     .ok_or_else(|| {
                         anyhow::anyhow!(
                             "Cannot derive flash size from JEDEC ID — pass an explicit length"

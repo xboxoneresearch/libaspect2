@@ -44,6 +44,18 @@ impl JedecId {
     pub fn is_valid(&self) -> bool {
         self.manufacturer != 0xFF && self.manufacturer != 0x00
     }
+
+    pub fn capacity_bytes(&self) -> Option<u64> {
+        let code = self.device[1];
+        (code != 0 && code != 0xFF).then(|| 1u64 << code)
+    }
+}
+
+impl std::fmt::Display for JedecId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "JEDEC ID: manufacturer={:#04X}  device={:#04X} {:#04X}",
+        self.manufacturer, self.device[0], self.device[1])
+    }
 }
 
 #[cfg(test)]

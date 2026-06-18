@@ -1,5 +1,3 @@
-use super::protocol::constants::Register;
-use super::protocol::transaction::TransactionType;
 use crate::error::Error;
 /// Backend abstraction module - hardware-specific implementations
 ///

@@ -218,7 +218,7 @@ mod tests {
     struct MockNorBackend {
         jedec: [u8; 3],
         status: u8,
-        mem: Vec<u8>,
+        _mem: Vec<u8>,
         last_write: Vec<u8>,
     }
 
@@ -227,7 +227,7 @@ mod tests {
             Self {
                 jedec,
                 status: 0,
-                mem: vec![0xFF; 256],
+                _mem: vec![0xFF; 256],
                 last_write: Vec::new(),
             }
         }
