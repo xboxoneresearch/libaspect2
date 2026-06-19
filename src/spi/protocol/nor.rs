@@ -53,7 +53,7 @@ impl JedecId {
 
 impl std::fmt::Display for JedecId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "JEDEC ID: manufacturer={:#04X}  device={:#04X} {:#04X}",
+        write!(f, "JEDEC ID: manufacturer={:#04X} device={:#04X} {:#04X}",
         self.manufacturer, self.device[0], self.device[1])
     }
 }

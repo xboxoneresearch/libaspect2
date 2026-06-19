@@ -741,6 +741,13 @@ pub struct MmcInfo {
 }
 
 impl MmcInfo {
+    pub fn card_id(&self) -> String {
+        format!("{:?} ({:#02x}) {} ({}) FW:{}.{} SN:{:#08x}",
+            self.cid.manufacturer, self.cid.mid, self.cid.pnm,
+            self.cid.cbx, self.cid.hw_revision(), self.cid.fw_revision(), self.cid.psn
+        )
+    }
+    
     pub fn sector_count(&self) -> u32 {
         self.ext_csd.sector_count()
     }
@@ -776,6 +783,7 @@ impl MmcInfo {
 
 impl std::fmt::Display for MmcInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "CID: {}", self.card_id())?;
         writeln!(f, "{}", self.cid)?;
         writeln!(f, "{}", self.csd)?;
         writeln!(f, "{}", self.ext_csd)
