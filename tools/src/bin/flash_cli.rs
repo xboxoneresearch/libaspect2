@@ -6,7 +6,7 @@ use libaspect2::spi::backend::ftdi::FtdiBackend;
 use libaspect2::spi::backend::{RawSpiBackend, SpiBackend};
 use libaspect2::spi::emmc_flash::EmmcFlash;
 use libaspect2::spi::nor_flash::NorFlash;
-use libaspect2::spi::protocol::constants::{BLOCK_SIZE, NOR_PAGE, NOR_SECTOR};
+use libaspect2::spi::protocol::constants::{BLOCK_SIZE, NOR_PAGE_SIZE, NOR_SECTOR_SIZE};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -288,22 +288,22 @@ fn run_nor(args: NorArgs, device: &str) -> anyhow::Result<()> {
         }
 
         NorOp::Write { file, offset } => {
-            if offset % NOR_SECTOR as u64 != 0 {
+            if offset % NOR_SECTOR_SIZE as u64 != 0 {
                 anyhow::bail!("Write offset {offset:#X} must be 4 KiB sector-aligned");
             }
 
             let mut f = File::open(&file)?;
             let file_len = f.metadata()?.len();
-            let sector_count = file_len.div_ceil(NOR_SECTOR as u64);
+            let sector_count = file_len.div_ceil(NOR_SECTOR_SIZE as u64);
 
             println!(
                 "Erasing {sector_count} sectors ({:.2} MiB) at {offset:#X}",
-                sector_count as f64 * NOR_SECTOR as f64 / (1u64 << 20) as f64
+                sector_count as f64 * NOR_SECTOR_SIZE as f64 / (1u64 << 20) as f64
             );
-            let erase_bar = pb(sector_count * NOR_SECTOR as u64);
+            let erase_bar = pb(sector_count * NOR_SECTOR_SIZE as u64);
             for i in 0..sector_count {
-                flash.sector_erase_4k((offset + i * NOR_SECTOR as u64) as u32)?;
-                erase_bar.inc(NOR_SECTOR as u64);
+                flash.sector_erase_4k((offset + i * NOR_SECTOR_SIZE as u64) as u32)?;
+                erase_bar.inc(NOR_SECTOR_SIZE as u64);
             }
             erase_bar.finish_with_message("erase done");
 
@@ -313,11 +313,11 @@ fn run_nor(args: NorArgs, device: &str) -> anyhow::Result<()> {
                 file
             );
             let write_bar = pb(file_len);
-            let mut buf = [0u8; NOR_PAGE];
+            let mut buf = [0u8; NOR_PAGE_SIZE];
             let mut pos = 0u64;
 
             while pos < file_len {
-                let chunk = (file_len - pos).min(NOR_PAGE as u64) as usize;
+                let chunk = (file_len - pos).min(NOR_PAGE_SIZE as u64) as usize;
                 buf[..chunk].fill(0xFF); // pad last partial page
                 f.read_exact(&mut buf[..chunk])?;
                 flash.page_program((offset + pos) as u32, &buf[..chunk])?;
@@ -328,17 +328,17 @@ fn run_nor(args: NorArgs, device: &str) -> anyhow::Result<()> {
         }
 
         NorOp::Erase { addr, length } => {
-            if addr % NOR_SECTOR as u64 != 0 || length % NOR_SECTOR as u64 != 0 {
+            if addr % NOR_SECTOR_SIZE as u64 != 0 || length % NOR_SECTOR_SIZE as u64 != 0 {
                 anyhow::bail!(
                     "Erase addr {addr:#X} and length {length:#X} must both be 4 KiB aligned"
                 );
             }
-            let sector_count = length / NOR_SECTOR as u64;
+            let sector_count = length / NOR_SECTOR_SIZE as u64;
             println!("Erasing {sector_count} sectors at {addr:#X}");
             let bar = pb(length);
             for i in 0..sector_count {
-                flash.sector_erase_4k((addr + i * NOR_SECTOR as u64) as u32)?;
-                bar.inc(NOR_SECTOR as u64);
+                flash.sector_erase_4k((addr + i * NOR_SECTOR_SIZE as u64) as u32)?;
+                bar.inc(NOR_SECTOR_SIZE as u64);
             }
             bar.finish_with_message("done");
         }

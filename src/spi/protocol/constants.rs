@@ -10,8 +10,8 @@ pub const EXT_CSD_SIZE: usize = 512;
 pub const BASE_CLOCK_MHZ: f64 = 196.875;
 
 // NOR
-pub const NOR_PAGE: usize = 256;
-pub const NOR_SECTOR: usize = 4096;
+pub const NOR_PAGE_SIZE: usize = 256;
+pub const NOR_SECTOR_SIZE: usize = 4096;
 
 /// SPI Command type (2 bits)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
