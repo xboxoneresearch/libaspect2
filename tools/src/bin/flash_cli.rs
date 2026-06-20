@@ -369,6 +369,18 @@ fn run_smc_reset(device: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn scan_for_adapters() -> anyhow::Result<()> {
+    let devices = FtdiBackend::scan()
+        .context("Failed scanning for FTDI devices");
+
+    println!("Found {} devices!", devices.iter().count());
+    for (index, dev) in devices.iter().enumerate() {
+        println!("  ({index}) {dev:?}");
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Top-level
 // ---------------------------------------------------------------------------
@@ -379,6 +391,8 @@ enum FlashKind {
     Emmc(EmmcArgs),
     /// JEDEC SPI NOR flash (direct on the SPI bus, no bridge)
     Nor(NorArgs),
+    /// Scan
+    Scan,
     /// Reset SMC
     Reset,
 }
@@ -399,6 +413,7 @@ fn main() -> anyhow::Result<()> {
     match args.kind {
         FlashKind::Emmc(a) => run_emmc(a, &args.device),
         FlashKind::Nor(a) => run_nor(a, &args.device),
+        FlashKind::Scan => scan_for_adapters(),
         FlashKind::Reset => run_smc_reset(&args.device),
     }
 }

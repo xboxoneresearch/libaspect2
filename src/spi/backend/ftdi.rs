@@ -1,5 +1,5 @@
 use bitflags::bitflags;
-use libftd2xx::{Ft4232h, FtdiCommon, FtdiMpsse, MpsseCmdBuilder, MpsseCmdExecutor};
+use libftd2xx::{DeviceInfo, Ft4232h, FtdiCommon, FtdiMpsse, MpsseCmdBuilder, MpsseCmdExecutor, list_devices};
 /// FTDI backend implementation using libftd2xx
 ///
 /// This backend provides direct FTDI MPSSE access for maximum performance.
@@ -47,6 +47,10 @@ impl FtdiBackend {
             dev,
             cached_pins: SpiPin::SS_N | SpiPin::EN_N | SpiPin::RST_N,
         }
+    }
+
+    pub fn scan() -> Result<Vec<DeviceInfo>, Error> {
+        list_devices().map_err(std::convert::Into::into)
     }
 
     /// Open FTDI device by description
