@@ -9,19 +9,20 @@ use super::backend::RawSpiBackend;
 use super::protocol::nor::{JedecId, NorOpcode, status};
 use crate::error::Error;
 use crate::prelude::*;
+use crate::spi::backend::GpioControl;
 
 /// JEDEC SPI NOR flash driver
 ///
 /// # Type parameters
 /// * `B` — a [`RawSpiBackend`] that owns the SPI bus
 /// * `C` — a clock/delay source (see [`crate::clock`])
-pub struct NorFlash<B: RawSpiBackend, C: ClockTrait + DelayNs + Clone> {
+pub struct NorFlash<B: RawSpiBackend + GpioControl, C: ClockTrait + DelayNs + Clone> {
     pub backend: B,
     clock: C,
     jedec_id: Option<JedecId>,
 }
 
-impl<B: RawSpiBackend, C: ClockTrait + DelayNs + Clone> NorFlash<B, C> {
+impl<B: RawSpiBackend + GpioControl, C: ClockTrait + DelayNs + Clone> NorFlash<B, C> {
     pub fn new(backend: B, clock: C) -> Self {
         Self {
             backend,
@@ -43,12 +44,24 @@ impl<B: RawSpiBackend, C: ClockTrait + DelayNs + Clone> NorFlash<B, C> {
         self.backend.initialize()?;
         let id = self.read_jedec_id()?;
         if !id.is_valid() {
-            return Err(Error::NorInvalidJedecId);
+            return Err(Error::NorInvalidJedecId(id));
         }
         self.jedec_id = Some(id);
         Ok(id)
     }
 
+    // -----------------------------------------------------------------------
+    // Public API: SMC Reset
+    // -----------------------------------------------------------------------
+
+    pub fn assert_reset(&mut self) -> Result<(), Error> {
+        self.backend.set_reset(true)
+    }
+
+    pub fn release_reset(&mut self) -> Result<(), Error> {
+        self.backend.set_reset(false)
+    }
+    
     // -----------------------------------------------------------------------
     // Public API: read
     // -----------------------------------------------------------------------
@@ -278,6 +291,20 @@ mod tests {
         }
     }
 
+    impl GpioControl for MockNorBackend {
+        fn set_chip_select(&mut self, _asserted: bool) -> Result<(), Error> {
+            Ok(())
+        }
+    
+        fn set_reset(&mut self, _asserted: bool) -> Result<(), Error> {
+            Ok(())
+        }
+    
+        fn set_enable(&mut self, _enabled: bool) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+    
     #[test]
     fn test_init_valid_jedec() {
         let backend = MockNorBackend::new([0xEF, 0x40, 0x18]); // Winbond W25Q128
@@ -291,7 +318,7 @@ mod tests {
     fn test_init_floating_bus() {
         let backend = MockNorBackend::new([0xFF, 0xFF, 0xFF]);
         let mut flash = NorFlash::new(backend, MockClock);
-        assert!(matches!(flash.init(), Err(Error::NorInvalidJedecId)));
+        assert!(matches!(flash.init(), Err(Error::NorInvalidJedecId(_))));
     }
 
     #[test]

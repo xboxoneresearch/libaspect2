@@ -240,9 +240,17 @@ fn run_nor(args: NorArgs, device: &str) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to open FTDI device {:?}: {e}", device))?;
     let mut flash = NorFlash::new(backend, StdClock);
 
+    flash.assert_reset()?;
+    let result = run_nor_ops(&mut flash, args);
+    flash.release_reset().ok();
+    result
+}
+
+fn run_nor_ops(flash: &mut NorFlash<FtdiBackend, StdClock>, args: NorArgs) -> anyhow::Result<()> {
     let jedec_id = flash
         .init()
         .map_err(|e| anyhow::anyhow!("NOR init failed: {e}"))?;
+
     flash.backend.set_clock_freq(args.spi_clock)?;
 
     println!("{jedec_id}");
@@ -353,6 +361,14 @@ fn run_nor(args: NorArgs, device: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn run_smc_reset(device: &str) -> anyhow::Result<()> {
+    let mut backend = FtdiBackend::open(device)
+        .map_err(|e| anyhow::anyhow!("Failed to open FTDI device {:?}: {e}", device))?;
+
+    SpiBackend::reset(&mut backend).ok();
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Top-level
 // ---------------------------------------------------------------------------
@@ -363,6 +379,8 @@ enum FlashKind {
     Emmc(EmmcArgs),
     /// JEDEC SPI NOR flash (direct on the SPI bus, no bridge)
     Nor(NorArgs),
+    /// Reset SMC
+    Reset,
 }
 
 #[derive(Parser, Debug)]
@@ -381,5 +399,6 @@ fn main() -> anyhow::Result<()> {
     match args.kind {
         FlashKind::Emmc(a) => run_emmc(a, &args.device),
         FlashKind::Nor(a) => run_nor(a, &args.device),
+        FlashKind::Reset => run_smc_reset(&args.device),
     }
 }
