@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -18,7 +20,16 @@ fn main() -> Result<()> {
 
     let mut buf = [0u8; 6];
 
-    loop {
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+
+    ctrlc::set_handler(move|| {
+        println!("received Ctrl+C!");
+        r.store(false, Ordering::SeqCst);
+    })
+    .expect("Error setting Ctrl-C handler");
+    
+    while running.load(Ordering::SeqCst) {
         code = rand::random_range(0x0000..0xFFFF);
         typ = *[0x10, 0x30, 0x70, 0xF0].choose(&mut rng).unwrap();
         seg_idx = rand::random_range(0..4);

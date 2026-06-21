@@ -5,12 +5,11 @@
 
 use super::backend::SpiBackend;
 use super::protocol::constants::{
-    BASE_CLOCK_MHZ, BLOCK_SIZE, ERROR_INTERRUPT, EraseType, RCA_ARG, Register, commands::*,
-    make_cmd, responses::*, status, transfer_config,
+    EraseType, Register, MmcInfo, MmcPresentState,
+    commands::*, status::*, *,
 };
 use crate::error::Error;
 use crate::prelude::*;
-use crate::spi::protocol::constants::MmcPresentState;
 
 // ---------------------------------------------------------------------------
 // SMC fuse hashes (Xbox debug probe)
@@ -33,16 +32,45 @@ pub struct SmcFuses {
     SbRev: [u8; 4],
 }
 
+impl SmcFuses {
+    pub fn from_bytes(data: &[u8; 0x38]) -> Self {
+        let mut offset = 0;
+        let ecid: [u8; 8] = data[offset..offset + 8].try_into().unwrap();
+        offset += 8;
+        let exp1smcbldigest: [u8; 16] = data[offset..offset + 16].try_into().unwrap();
+        offset += 16;
+        let rsvdpublic: [u8; 8] = data[offset..offset + 8].try_into().unwrap();
+        offset += 8;
+        let rsvdprivate: [u8; 8] = data[offset..offset + 8].try_into().unwrap();
+        offset += 8;
+        let chipid: [u8; 12] = data[offset..offset + 12].try_into().unwrap();
+        offset += 12;
+        let sbrev: [u8; 4] = data[offset..offset + 4].try_into().unwrap();
+
+        Self {
+            ECID: ecid,
+            Exp1SMCBLDigest: exp1smcbldigest,
+            RsvdPublic: rsvdpublic,
+            RsvdPrivate: rsvdprivate,
+            ChipID: chipid,
+            SbRev: sbrev,
+        }
+    }
+}
+
 #[cfg(feature = "std")]
 impl std::fmt::Display for SmcFuses {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let smc_flavor = match self.Exp1SMCBLDigest {
-            B1SMCBL_HASH_DEVKIT => "Development Mode, SMCFWKey:Devkit".to_string(),
-            B1SMCBL_HASH_RTL_A => "Production Mode, SMCFWKey:rtlA".to_string(),
-            B1SMCBL_HASH_RTL_B => "Production Mode, SMCFWKey:rtlB".to_string(),
-            B1SMCBL_HASH_RTL_C => "Production Mode, SMCFWKey:rtlC".to_string(),
-            B1SMCBL_HASH_RTL_D => "Production Mode, SMCFWKey:rtlD".to_string(),
-            _ => format!("!UNKNOWN! ({})", hex::encode(self.Exp1SMCBLDigest)),
+        static FLAVORS: &[(&str, [u8; 16])] = &[
+            ("Development Mode, SMCFWKey:Devkit", B1SMCBL_HASH_DEVKIT),
+            ("Production Mode, SMCFWKey:rtlA", B1SMCBL_HASH_RTL_A),
+            ("Production Mode, SMCFWKey:rtlB", B1SMCBL_HASH_RTL_B),
+            ("Production Mode, SMCFWKey:rtlC", B1SMCBL_HASH_RTL_C),
+            ("Production Mode, SMCFWKey:rtlD", B1SMCBL_HASH_RTL_D),
+        ];
+        let smc_flavor = match FLAVORS.iter().find(|(_, h)| *h == self.Exp1SMCBLDigest) {
+            Some((name, _)) => name.to_string(),
+            None => format!("!UNKNOWN! ({})", hex::encode(self.Exp1SMCBLDigest)),
         };
         writeln!(f, "ECID: {}", hex::encode(self.ECID))?;
         writeln!(f, "Exp1SMCBLDigest: {smc_flavor}")?;
@@ -54,16 +82,17 @@ impl std::fmt::Display for SmcFuses {
 }
 
 /// EmmcReader — the controller
-pub struct EmmcReader<B: SpiBackend, C: ClockTrait + DelayNs + Clone> {
+pub struct EmmcFlash<B: SpiBackend, C: ClockTrait + DelayNs + Clone> {
     pub backend: B,
     internal_clock: C,
     initialized: bool,
     block_size: u32,
     clock_mhz: f64,
     cid: [u32; 4],
+    csd: [u32; 4],
 }
 
-impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
+impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcFlash<B, C> {
     /// Create a new reader with the specified backend
     pub fn new(backend: B, clock_impl: C) -> Self {
         Self {
@@ -73,6 +102,7 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
             block_size: 0,
             clock_mhz: 0.0,
             cid: [0; 4],
+            csd: [0; 4],
         }
     }
 
@@ -80,11 +110,13 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         self.initialized
     }
 
-    pub fn cid(&self) -> &[u32; 4] {
-        &self.cid
+    pub fn cid(&self) -> EmmcCid {
+        EmmcCid::from_response(self.cid)
     }
 
-    fn decode_response_r1x(&mut self) {}
+    pub fn csd(&self) -> EmmcCsd {
+        EmmcCsd::from_response(self.csd)
+    }
 
     // -----------------------------------------------------------------------
     // Register helpers
@@ -113,14 +145,14 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         self.write_reg(Register::CommandAndTransferMode, cmd_word)?;
 
         // Wait for Command Complete (bit 0)
-        self.poll_bit(Register::InterruptStatus, 0, true, true, None)?;
+        self.poll_bit(Register::InterruptStatus, CMD_COMPLETE, true, true, None)?;
 
         // Handle response type (bits [17:16] of packed word)
         match (cmd_word >> 16) & 3 {
             0..=2 => {} // none / R2 / R1
             3 => {
                 // R1b — also wait for Transfer Complete (bit 1)
-                let _ = self.poll_bit(Register::InterruptStatus, 1, true, true, Some(5000));
+                let _ = self.poll_bit(Register::InterruptStatus, TRANSFER_COMPLETE, true, true, Some(5000));
             }
             _ => return Err(Error::RegisterAccessFailed),
         }
@@ -183,7 +215,7 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     }
 
     fn clear_interrupts(&mut self) -> Result<(), Error> {
-        self.write_reg(Register::InterruptStatus, 0xFFFF_FFFF)
+        self.write_reg(Register::InterruptStatus, CLEAR_INTERRUPTS)
     }
 
     // -----------------------------------------------------------------------
@@ -220,8 +252,8 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     fn enable_interrupts(&mut self) -> Result<(), Error> {
         // INT_STATUS_EN: enable Command Complete, Transfer Complete,
         // Buffer Write/Read Ready, and all error interrupts
-        self.write_reg(Register::InterruptStatusEn, 0x1FFF_0033)?;
-        self.write_reg(Register::InterruptSignalEn, 0x17FF_0033)?;
+        self.write_reg(Register::InterruptStatusEn, INTERRUPT_STATUS_EN)?;
+        self.write_reg(Register::InterruptSignalEn, INTERRUPT_SIGNAL_EN)?;
         Ok(())
     }
 
@@ -231,21 +263,21 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
 
     /// CMD0 → CMD1 loop → CMD2 → CMD3: bring card from Idle to Standby.
     fn enter_standby(&mut self) -> Result<(), Error> {
-        self.command(CMD0, 0)?;
+        self.command(CMD0_GO_IDLE, 0)?;
 
         // Set data timeout counter (bits [19:17])
         self.modify_reg(Register::ClockControl, 0x000E_0000, 0)?;
 
         // CMD1 loop — wait for card ready (bit 31 of OCR)
         loop {
-            self.command(CMD1, 0x4000_0100)?;
+            self.command(CMD1_SEND_OP_COND, 0x4000_0100)?;
             if self.read_reg(Register::Response0And1)? & 0x8000_0000 != 0 {
                 break;
             }
         }
 
         // CMD2 — read CID
-        self.command(CMD2, 0)?;
+        self.command(CMD2_ALL_SEND_CID, 0)?;
         self.cid = [
             self.read_reg(Register::Response0And1)?,
             self.read_reg(Register::Response2And3)?,
@@ -254,19 +286,30 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         ];
 
         // CMD3 — assign RCA
-        self.command(CMD3, RCA_ARG)
+        self.command(CMD3_SET_RCA, RCA_ARG)?;
+
+        // CMD9 - read CSD
+        self.command(CMD9_SEND_CSD, RCA_ARG)?;
+        self.csd = [
+            self.read_reg(Register::Response0And1)?,
+            self.read_reg(Register::Response2And3)?,
+            self.read_reg(Register::Response4And5)?,
+            self.read_reg(Register::Response6And7)?,
+        ];
+
+        Ok(())
     }
 
     fn select_card(&mut self, select: bool) -> Result<(), Error> {
         if select {
-            self.command(CMD7_SEL, RCA_ARG)
+            self.command(CMD7_SELECT_CARD, RCA_ARG)
         } else {
-            self.command(CMD7_DESEL, 0)
+            self.command(CMD7_DESELECT_CARD, 0)
         }
     }
 
     fn set_block_size(&mut self, size: u32) -> Result<(), Error> {
-        self.command(CMD16, size & 0xFFF)?;
+        self.command(CMD16_SET_BLOCKLEN, size & 0xFFF)?;
         self.block_size = size;
         Ok(())
     }
@@ -279,14 +322,14 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     }
 
     fn send_status(&mut self) -> Result<(), Error> {
-        self.command(CMD13, RCA_ARG)
+        self.command(CMD13_SEND_STATUS, RCA_ARG)
     }
 
     fn set_xip_output_delay(&mut self, value: u32) -> Result<(), Error> {
         self.write_reg(Register::XipOutputDelay, value)
     }
 
-    fn get_present_state(&mut self) -> Result<MmcPresentState, Error> {
+    pub fn get_present_state(&mut self) -> Result<MmcPresentState, Error> {
         let reg = self.read_reg(Register::PresentState)?;
         Ok(MmcPresentState(reg))
     }
@@ -319,17 +362,17 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         self.select_card(true)?;
 
         // CMD6 SWITCH: HS_TIMING = 1 initially
-        self.command(CMD6, 0x03B9_0100)?;
+        self.command(CMD6_SWITCH, TIMING_HS)?;
 
         // CMD6 SWITCH: BUS_WIDTH = 8-bit (EXT_CSD[183] = 2)
         // Must tell the card BEFORE switching host controller bus width
-        self.command(CMD6, 0x03B7_0200)?;
+        self.command(CMD6_SWITCH, 0x03B7_0200)?;
 
         // 8-bit bus width on host side: clear bits [5:3], set bit 5
         let hc = (self.read_reg(Register::HostControl)? & !0x38) | 0x20;
         self.write_reg(Register::HostControl, hc)?;
 
-        self.set_block_size(BLOCK_SIZE)?;
+        self.set_block_size(BLOCK_SIZE as u32)?;
 
         let freq = if freq_mhz > 0.0 {
             freq_mhz
@@ -340,13 +383,13 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
 
         // Select timing mode by target speed
         let timing = if freq > 52.0 {
-            0x03B9_0200 // HS200
+            TIMING_HS200 // HS200
         } else if freq > 25.0 {
-            0x03B9_0100 // High Speed
+            TIMING_HS // High Speed
         } else {
-            0x03B9_0000 // Legacy
+            TIMING_LEGACY // Legacy
         };
-        self.command(CMD6, timing)?;
+        self.command(CMD6_SWITCH, timing)?;
 
         self.configure_high_speed(freq)
     }
@@ -373,31 +416,31 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
             }
         }
     }
-
+    
     // -----------------------------------------------------------------------
     // Extended CSD
     // -----------------------------------------------------------------------
 
-    pub fn read_ext_csd(&mut self, buf: &mut [u8; 512]) -> Result<(), Error> {
+    pub fn read_ext_csd(&mut self, buf: &mut [u8; EXT_CSD_SIZE]) -> Result<(), Error> {
         self.set_block_count(1)?;
         self.clear_interrupts()?;
 
         // CMD8 SEND_EXT_CSD (data read)
         self.write_reg(Register::Argument, 0)?;
-        self.write_reg(Register::CommandAndTransferMode, CMD8_EXT_CSD)?;
+        self.write_reg(Register::CommandAndTransferMode, CMD8_SEND_EXT_CSD)?;
 
         // Wait for Command Complete
-        self.poll_bit(Register::InterruptStatus, 0, true, true, Some(1000))?;
+        self.poll_bit(Register::InterruptStatus, CMD_COMPLETE, true, true, Some(1000))?;
 
         // Wait for Buffer Read Ready (bit 5)
-        self.poll_bit(Register::InterruptStatus, 5, true, true, Some(1000))?;
+        self.poll_bit(Register::InterruptStatus, DATA_READ_READY, true, true, Some(1000))?;
 
         // Read 512 bytes
         buf.fill(0);
         self.backend.read_data(Register::DataFifo, buf)?;
 
         // Wait for Transfer Complete (bit 1)
-        self.poll_bit(Register::InterruptStatus, 1, true, true, Some(1000))?;
+        self.poll_bit(Register::InterruptStatus, TRANSFER_COMPLETE, true, true, Some(1000))?;
 
         Ok(())
     }
@@ -436,11 +479,12 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
 
         // Ramp up SPI bus clock now that the link is verified
         // FT2232H supports up to 30 MHz
-        self.backend.set_spi_clock(30000)?;
+        self.backend.set_spi_clock_khz(30_000)?;
 
         // Enable eMMC interrupts so polling works
         self.enable_interrupts()?;
 
+        // Init flash controller clock
         // Start with a slow identification clock (~400 kHz)
         self.set_clock(0.4)?;
 
@@ -456,7 +500,7 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     pub fn controller_init(&mut self, freq_mhz: f64) -> Result<(), Error> {
         let hc = (self.read_reg(Register::HostControl)? & !0x38) | 0x20;
         self.write_reg(Register::HostControl, hc)?;
-        self.set_block_size(BLOCK_SIZE)?;
+        self.set_block_size(BLOCK_SIZE as u32)?;
 
         let freq = if freq_mhz > 0.0 {
             freq_mhz
@@ -505,26 +549,39 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     // Public API: read / write pages
     // -----------------------------------------------------------------------
 
+    pub fn get_mmc_info(&mut self) -> Result<MmcInfo, Error> {
+        if !self.is_initialized() {
+            return Err(Error::InitializationFailed);
+        }
+
+        let mut ext_csd = [0u8; EXT_CSD_SIZE];
+        self.read_ext_csd(&mut ext_csd)?;
+        
+        Ok(MmcInfo {
+            cid: self.cid(), csd: self.csd(), ext_csd: ExtCsd::from_bytes(ext_csd)
+        })
+    }
+    
     /// Read a single 512-byte block at the given LBA.
-    pub fn read_page(&mut self, lba: u32, buf: &mut [u8; 512]) -> Result<(), Error> {
+    pub fn read_page(&mut self, lba: u32, buf: &mut [u8; BLOCK_SIZE]) -> Result<(), Error> {
         self.set_block_count(1)?;
         self.clear_interrupts()?;
 
         // CMD17 READ_SINGLE_BLOCK
         self.write_reg(Register::Argument, lba)?;
-        self.write_reg(Register::CommandAndTransferMode, CMD17_READ)?;
+        self.write_reg(Register::CommandAndTransferMode, CMD17_READ_SINGLE_BLOCK)?;
 
         // Command Complete
-        self.poll_bit(Register::InterruptStatus, 0, true, true, Some(1000))?;
+        self.poll_bit(Register::InterruptStatus, CMD_COMPLETE, true, true, Some(1000))?;
 
         // Buffer Read Ready (bit 5)
-        self.poll_bit(Register::InterruptStatus, 5, true, true, Some(1000))?;
+        self.poll_bit(Register::InterruptStatus, DATA_READ_READY, true, true, Some(1000))?;
 
         // Read 512 bytes from the data FIFO
         self.backend.read_data(Register::DataFifo, buf)?;
 
         // Transfer Complete (bit 1)
-        self.poll_bit(Register::InterruptStatus, 1, true, true, Some(1000))?;
+        self.poll_bit(Register::InterruptStatus, TRANSFER_COMPLETE, true, true, Some(1000))?;
 
         Ok(())
     }
@@ -532,13 +589,13 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     /// Read multiple contiguous 512-byte blocks.
     ///
     /// `buf` must be at least `count * 512` bytes.
-    pub fn read_pages(&mut self, start_lba: u32, buf: &mut [u8], count: u32) -> Result<(), Error> {
-        assert_eq!(buf.len() as u32, count * BLOCK_SIZE);
+    pub fn read_pages(&mut self, start_lba: u32, buf: &mut [u8], count: usize) -> Result<(), Error> {
+        assert_eq!(buf.len(), count * BLOCK_SIZE);
         if count == 0 {
             return Ok(());
         }
         if count == 1 {
-            let page: &mut [u8; 512] = (&mut buf[..512]).try_into().unwrap();
+            let page: &mut [u8; BLOCK_SIZE] = (&mut buf[..BLOCK_SIZE]).try_into().unwrap();
             return self.read_page(start_lba, page);
         }
 
@@ -547,42 +604,42 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
 
         // CMD18 READ_MULTIPLE_BLOCK
         self.write_reg(Register::Argument, start_lba)?;
-        self.write_reg(Register::CommandAndTransferMode, CMD18_READ)?;
+        self.write_reg(Register::CommandAndTransferMode, CMD18_READ_MULTIPLE_BLOCK)?;
 
         // Command Complete
-        self.poll_bit(Register::InterruptStatus, 0, true, true, Some(1000))?;
+        self.poll_bit(Register::InterruptStatus, CMD_COMPLETE, true, true, Some(1000))?;
 
         // Buffer Read Ready (bit 5) (Note: Intentionally does not clear Buffer Read Ready bit)
-        self.poll_bit(Register::InterruptStatus, 5, true, false, None)?;
+        self.poll_bit(Register::InterruptStatus, DATA_READ_READY, true, false, None)?;
 
         self.backend.read_data(Register::DataFifo, buf)?;
 
         // Transfer Complete (bit 1)
-        self.poll_bit(Register::InterruptStatus, 1, true, true, Some(5000))?;
+        self.poll_bit(Register::InterruptStatus, TRANSFER_COMPLETE, true, true, Some(5000))?;
 
         Ok(())
     }
 
     /// Write a single 512-byte block at the given LBA.
-    pub fn write_page(&mut self, lba: u32, buf: &[u8; 512]) -> Result<(), Error> {
+    pub fn write_page(&mut self, lba: u32, buf: &[u8; BLOCK_SIZE]) -> Result<(), Error> {
         self.set_block_count(1)?;
         self.clear_interrupts()?;
 
         // CMD24 WRITE_BLOCK
         self.write_reg(Register::Argument, lba)?;
-        self.write_reg(Register::CommandAndTransferMode, CMD24_WRITE)?;
+        self.write_reg(Register::CommandAndTransferMode, CMD24_WRITE_BLOCK)?;
 
         // Command Complete
-        self.poll_bit(Register::InterruptStatus, 0, true, true, Some(1000))?;
+        self.poll_bit(Register::InterruptStatus, CMD_COMPLETE, true, true, Some(1000))?;
 
         // Buffer Write Ready (bit 4)
-        self.poll_bit(Register::InterruptStatus, 4, true, true, Some(1000))?;
+        self.poll_bit(Register::InterruptStatus, DATA_WRITE_READY, true, true, Some(1000))?;
 
         // Write 512 bytes to the data FIFO
         self.backend.write_data(Register::DataFifo, buf)?;
 
         // Transfer Complete (bit 1)
-        self.poll_bit(Register::InterruptStatus, 1, true, true, Some(5000))?;
+        self.poll_bit(Register::InterruptStatus, TRANSFER_COMPLETE, true, true, Some(5000))?;
 
         Ok(())
     }
@@ -590,13 +647,13 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     /// Write multiple contiguous 512-byte blocks.
     ///
     /// `buf` must be at least `count * 512` bytes.
-    pub fn write_pages(&mut self, start_lba: u32, buf: &[u8], count: u32) -> Result<(), Error> {
-        assert_eq!(buf.len() as u32, count * BLOCK_SIZE);
+    pub fn write_pages(&mut self, start_lba: u32, buf: &[u8], count: usize) -> Result<(), Error> {
+        assert_eq!(buf.len(), count * BLOCK_SIZE);
         if count == 0 {
             return Ok(());
         }
         if count == 1 {
-            let page: &[u8; 512] = buf[..512].try_into().unwrap();
+            let page: &[u8; BLOCK_SIZE] = buf[..BLOCK_SIZE].try_into().unwrap();
             return self.write_page(start_lba, page);
         }
 
@@ -605,18 +662,18 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
 
         // CMD25 WRITE_MULTIPLE_BLOCK
         self.write_reg(Register::Argument, start_lba)?;
-        self.write_reg(Register::CommandAndTransferMode, CMD25_WRITE)?;
+        self.write_reg(Register::CommandAndTransferMode, CMD25_WRITE_MULTIPLE_BLOCK)?;
 
         // Command Complete
-        self.poll_bit(Register::InterruptStatus, 0, true, true, Some(1000))?;
+        self.poll_bit(Register::InterruptStatus, CMD_COMPLETE, true, true, Some(1000))?;
 
         // Buffer Write Ready (bit 4)
-        self.poll_bit(Register::InterruptStatus, 4, true, true, None)?;
+        self.poll_bit(Register::InterruptStatus, DATA_WRITE_READY, true, true, None)?;
 
         self.backend.write_data(Register::DataFifo, buf)?;
 
         // Transfer Complete (bit 1)
-        self.poll_bit(Register::InterruptStatus, 1, true, true, Some(5000))?;
+        self.poll_bit(Register::InterruptStatus, TRANSFER_COMPLETE, true, true, Some(5000))?;
 
         Ok(())
     }
@@ -636,18 +693,16 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         let start_sec = (start_byte >> 9) as u32;
         let end_sec = start_sec + (length >> 9) as u32;
 
-        self.set_block_size(BLOCK_SIZE)?;
+        self.set_block_size(BLOCK_SIZE as u32)?;
 
         let mut erase_group: u32 = 1;
-
+        let mut ecsd = [0u8; EXT_CSD_SIZE];
+        self.read_ext_csd(&mut ecsd)?;
+        
         if kind == EraseType::Erase {
-            let mut ecsd = [0u8; 512];
-            self.read_ext_csd(&mut ecsd)?;
-            erase_group = (ecsd[224] as u32) << 10;
+            erase_group = (ecsd[EXT_CSD_HC_ERASE_GRP_SIZE] as u32) << 10;
         } else if kind == EraseType::Trim {
-            let mut ecsd = [0u8; 512];
-            self.read_ext_csd(&mut ecsd)?;
-            if ecsd[231] & 0x10 == 0 {
+            if ecsd[EXT_CSD_SEC_FEATURE_SUPPORT] & 0x10 == 0 {
                 return Err(Error::MmcNotSupported);
             }
         }
@@ -657,10 +712,10 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
         }
 
         if kind == EraseType::Erase {
-            self.command(CMD6, 0x03B1_0000)?; // enhanced-erase attribute
+            self.command(CMD6_SWITCH, 0x03B1_0000)?; // enhanced-erase attribute
         }
 
-        self.command(CMD35, start_sec)?;
+        self.command(CMD35_ERASE_GROUP_START, start_sec)?;
 
         let last = end_sec
             .checked_sub(erase_group)
@@ -669,8 +724,8 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
             return Err(Error::RegisterAccessFailed);
         }
 
-        self.command(CMD36, last)?;
-        self.command(CMD38, kind as u32)?;
+        self.command(CMD36_ERASE_GROUP_END, last)?;
+        self.command(CMD38_ERASE, kind as u32)?;
         self.send_status()
     }
 
@@ -679,12 +734,12 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
     // -----------------------------------------------------------------------
 
     pub fn sanitize(&mut self) -> Result<(), Error> {
-        let mut ecsd = [0u8; 512];
+        let mut ecsd = [0u8; EXT_CSD_SIZE];
         self.read_ext_csd(&mut ecsd)?;
-        if ecsd[231] & 0x40 == 0 {
+        if ecsd[EXT_CSD_SEC_FEATURE_SUPPORT] & 0x40 == 0 {
             return Err(Error::MmcNotSupported);
         }
-        self.command(CMD6, 0x03A5_FF00)?;
+        self.command(CMD6_SWITCH, 0x03A5_FF00)?;
         self.send_status()
     }
 
@@ -694,10 +749,10 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
 
     pub fn async_abort(&mut self, is_read: bool) -> Result<(), Error> {
         self.clear_interrupts()?;
-        let c = make_cmd(12, if is_read { RESP_R1 } else { RESP_R1B });
-        self.command(c, 0)?;
-        self.modify_reg(Register::ClockControl, 0x0600_0000, 0)?;
-        self.poll_mask(Register::ClockControl, 0x0600_0000, 0, false, Some(5000))
+        let cmd = if is_read { CMD12_STOP_READ } else { CMD12_STOP_WRITE };
+        self.command(cmd, 0)?;
+        self.modify_reg(Register::ClockControl, CLK_SW_RESET_CMD_DAT, 0)?;
+        self.poll_mask(Register::ClockControl, CLK_SW_RESET_CMD_DAT, 0, false, Some(5000))
     }
 
     // -----------------------------------------------------------------------
@@ -720,30 +775,7 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcReader<B, C> {
             pos += size_of::<u32>();
         }
 
-        // Copy data from buf into SMC_FUSES struct
-        let mut offset = 0;
-        let ecid: [u8; 8] = buf[offset..offset + 8].try_into().unwrap();
-        offset += 8;
-        let exp1smcbldigest: [u8; 16] = buf[offset..offset + 16].try_into().unwrap();
-        offset += 16;
-        let rsvdpublic: [u8; 8] = buf[offset..offset + 8].try_into().unwrap();
-        offset += 8;
-        let rsvdprivate: [u8; 8] = buf[offset..offset + 8].try_into().unwrap();
-        offset += 8;
-        let chipid: [u8; 12] = buf[offset..offset + 12].try_into().unwrap();
-        offset += 12;
-        let sbrev: [u8; 4] = buf[offset..offset + 4].try_into().unwrap();
-
-        let fuses = SmcFuses {
-            ECID: ecid,
-            Exp1SMCBLDigest: exp1smcbldigest,
-            RsvdPublic: rsvdpublic,
-            RsvdPrivate: rsvdprivate,
-            ChipID: chipid,
-            SbRev: sbrev,
-        };
-
-        Ok(fuses)
+        Ok(SmcFuses::from_bytes(&buf))
     }
 
     // -----------------------------------------------------------------------
@@ -772,7 +804,7 @@ mod tests {
     struct MockClock;
 
     impl DelayNs for MockClock {
-        fn delay_ns(&mut self, ns: u32) {}
+        fn delay_ns(&mut self, _ns: u32) {}
     }
 
     impl ClockTrait for MockClock {
@@ -817,12 +849,16 @@ mod tests {
         fn initialize(&mut self) -> Result<(), Error> {
             Ok(())
         }
+
+        fn set_spi_clock_khz(&mut self, _freq_khz: u32) -> Result<(), Error> {
+            Ok(())
+        }
     }
 
     #[test]
     fn test_read_write_register() {
         let backend = MockBackend::new();
-        let mut reader = EmmcReader::new(backend, MockClock);
+        let mut reader = EmmcFlash::new(backend, MockClock);
 
         reader.write_reg(Register::Argument, 0xDEAD_BEEF).unwrap();
         let value = reader.read_reg(Register::Argument).unwrap();
@@ -832,7 +868,7 @@ mod tests {
     #[test]
     fn test_sanity_check() {
         let backend = MockBackend::new();
-        let mut reader = EmmcReader::new(backend, MockClock);
+        let mut reader = EmmcFlash::new(backend, MockClock);
         reader.sanity_check().unwrap();
     }
 }

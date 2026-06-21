@@ -1,6 +1,6 @@
-//! Protocol module - hardware-independent eMMC SPI protocol implementation
+//! Protocol module - hardware-independent SPI protocol implementations
 //!
 //! This module defines the protocol structures and operations without
 //! depending on any specific hardware backend (FTDI, embedded-hal, etc.)
 pub mod constants;
-pub mod transaction;
+pub mod nor;

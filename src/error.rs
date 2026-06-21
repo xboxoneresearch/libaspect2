@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::{prelude::*, spi::protocol::nor::JedecId};
 #[cfg(feature = "ftdi")]
 use libftd2xx::{DeviceTypeError, FtStatus, TimeoutError as FtdiTimeout};
 use thiserror::Error as DeriveError;
@@ -46,4 +46,7 @@ pub enum Error {
 
     #[error("Operation timed out")]
     Timeout,
+
+    #[error("SPI NOR flash returned an invalid JEDEC ID ({0})")]
+    NorInvalidJedecId(JedecId),
 }
