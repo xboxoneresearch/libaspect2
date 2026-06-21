@@ -1,7 +1,7 @@
 use indicatif::{ProgressIterator, ProgressStyle};
 use libaspect2::Ft4232h;
 use libaspect2::i2c::i2c_bitbang::I2cFtBitbang;
-use libaspect2::i2c::isd9160::{self, Isd9160, Isd9160Sounds};
+use libaspect2::i2c::isd9160::{self, FLASH_SIZE, Isd9160, Isd9160Sounds};
 use std::io::{Read, Write};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut buf = vec![0u8; isd9160::READ_CHUNK_SIZE];
         println!("Reading flash...");
         let mut file = std::fs::File::create("flash.bin")?;
-        for _ in (0..isd.flash_size())
+        for _ in (0..FLASH_SIZE)
             .progress()
             .with_style(
                 ProgressStyle::default_spinner()

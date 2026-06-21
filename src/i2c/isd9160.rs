@@ -134,7 +134,7 @@ where
     pub fn write_register<U: Into<u8>>(&mut self, register: U, data: &[u8]) {
         self.write_reg_buf[0] = Isd9160Commands::CMD_REG_WRITE.into();
         self.write_reg_buf[1] = register.into();
-        self.write_reg_buf[2..].copy_from_slice(data);
+        self.write_reg_buf[2..2 + data.len()].copy_from_slice(data);
         self.device
             .write(Self::I2C_ADDR, &self.write_reg_buf)
             .expect("Failed to write register");
@@ -167,7 +167,7 @@ where
     }
 
     /// This reads 6 bytes at a time
-    fn read_data(&mut self, addr: u32) -> [u8; 6] {
+    fn read_data(&mut self, addr: u32) -> [u8; READ_CHUNK_SIZE] {
         let mut buf = [0u8; READ_CHUNK_SIZE + STATUS_PREFIX_SZ];
 
         let mut cmd: [u8; 5] = [Isd9160Commands::CMD_FLASH_READ.into(), 0, 0, 0, 0];
