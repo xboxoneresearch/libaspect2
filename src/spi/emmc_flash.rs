@@ -479,11 +479,12 @@ impl<B: SpiBackend, C: ClockTrait + DelayNs + Clone> EmmcFlash<B, C> {
 
         // Ramp up SPI bus clock now that the link is verified
         // FT2232H supports up to 30 MHz
-        self.backend.set_spi_clock(30000)?;
+        self.backend.set_spi_clock_khz(30_000)?;
 
         // Enable eMMC interrupts so polling works
         self.enable_interrupts()?;
 
+        // Init flash controller clock
         // Start with a slow identification clock (~400 kHz)
         self.set_clock(0.4)?;
 
@@ -846,6 +847,10 @@ mod tests {
         }
 
         fn initialize(&mut self) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn set_spi_clock_khz(&mut self, _freq_khz: u32) -> Result<(), Error> {
             Ok(())
         }
     }

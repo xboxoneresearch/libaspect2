@@ -36,6 +36,10 @@ impl<B: RawSpiBackend + GpioControl, C: ClockTrait + DelayNs + Clone> NorFlash<B
         self.jedec_id
     }
 
+    pub fn set_spi_clock_khz(&mut self, freq_khz: u32) -> Result<(), Error> {
+        self.backend.set_clock_freq_khz(freq_khz)
+    }
+
     /// Initialize: set up the backend and read the JEDEC ID.
     ///
     /// Returns an error if the device does not respond with a valid ID
@@ -52,6 +56,11 @@ impl<B: RawSpiBackend + GpioControl, C: ClockTrait + DelayNs + Clone> NorFlash<B
         if !id.is_valid() {
             return Err(Error::NorInvalidJedecId(id));
         }
+
+        // Ramp up the clock to 6 Mhz
+        // self.backend.initialize did set it very slow for enumeration
+        self.backend.set_clock_freq_khz(6_000)?;
+        
         self.jedec_id = Some(id);
         Ok(id)
     }
@@ -284,7 +293,7 @@ mod tests {
             Ok(())
         }
 
-        fn set_clock_freq(&mut self, _freq_khz: u32) -> Result<(), Error> {
+        fn set_clock_freq_khz(&mut self, _freq_khz: u32) -> Result<(), Error> {
             Ok(())
         }
 

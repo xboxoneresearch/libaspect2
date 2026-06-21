@@ -104,7 +104,7 @@ where
             .map_err(|_| Error::SpiError)
     }
 
-    fn set_clock_freq(&mut self, _freq_khz: u32) -> Result<(), Error> {
+    fn set_clock_freq_khz(&mut self, _freq_khz: u32) -> Result<(), Error> {
         Ok(())
     }
 
@@ -177,6 +177,10 @@ where
         // Perform reset sequence
         SpiBackend::reset(self)?;
 
+        Ok(())
+    }
+
+    fn set_spi_clock_khz(&mut self, _freq_khz: u32) -> Result<(), Error> {
         Ok(())
     }
 }

@@ -242,7 +242,7 @@ impl SpiBackend for FtdiBackend {
         Ok(())
     }
 
-    fn set_spi_clock(&mut self, freq_khz: u32) -> Result<(), Error> {
+    fn set_spi_clock_khz(&mut self, freq_khz: u32) -> Result<(), Error> {
         self.dev.set_clock(freq_khz * 1000)?;
         Ok(())
     }
@@ -286,7 +286,7 @@ impl SpiBackend for FtdiBackend {
 
         // Setup clock frequency — conservative 5 kHz for init;
         // ramped up after the SPI bridge is verified.
-        self.dev.set_clock(5_000)?;
+        self.set_clock_freq_khz(5)?;
 
         Ok(())
     }
@@ -353,7 +353,7 @@ impl RawSpiBackend for FtdiBackend {
         Ok(())
     }
 
-    fn set_clock_freq(&mut self, freq_khz: u32) -> Result<(), Error> {
+    fn set_clock_freq_khz(&mut self, freq_khz: u32) -> Result<(), Error> {
         self.dev.set_clock(freq_khz * 1000)?;
         Ok(())
     }
@@ -385,7 +385,7 @@ impl RawSpiBackend for FtdiBackend {
         
         // Setup clock frequency — conservative 5 kHz for init;
         // ramped up after the SPI bridge is verified.
-        self.dev.set_clock(5_000)?;
+        self.set_clock_freq_khz(5)?;
 
         Ok(())
     }

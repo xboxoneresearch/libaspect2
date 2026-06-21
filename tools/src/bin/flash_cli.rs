@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use libaspect2::prelude::*;
 use libaspect2::spi::backend::ftdi::FtdiBackend;
-use libaspect2::spi::backend::{RawSpiBackend, SpiBackend};
+use libaspect2::spi::backend::SpiBackend;
 use libaspect2::spi::emmc_flash::EmmcFlash;
 use libaspect2::spi::nor_flash::NorFlash;
 use libaspect2::spi::protocol::constants::{BLOCK_SIZE, NOR_PAGE_SIZE, NOR_SECTOR_SIZE};
@@ -228,7 +228,7 @@ enum NorOp {
 #[derive(Parser, Debug)]
 struct NorArgs {
     /// SPI clock frequency in kHz
-    #[arg(long, default_value = "10000")]
+    #[arg(long, default_value = "10_000")]
     spi_clock: u32,
 
     #[command(subcommand)]
@@ -243,7 +243,7 @@ fn run_nor(args: NorArgs, device: &str) -> anyhow::Result<()> {
         .init()
         .map_err(|e| anyhow::anyhow!("NOR init failed: {e}"))?;
 
-    flash.backend.set_clock_freq(args.spi_clock)?;
+    flash.set_spi_clock_khz(args.spi_clock)?;
 
     println!("{jedec_id}");
     if let Some(cap) = jedec_id.capacity_bytes() {
