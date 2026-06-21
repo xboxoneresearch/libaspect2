@@ -359,11 +359,46 @@ impl RawSpiBackend for FtdiBackend {
     }
 
     fn initialize(&mut self) -> Result<(), Error> {
-        <Self as SpiBackend>::initialize(self)
+        // Set MPSSE mode
+        self.dev.set_bit_mode(0x0, libftd2xx::BitMode::Mpsse)?;
+
+        // Set latency timer (lower = faster USB turnaround)
+        self.dev.set_latency_timer(Duration::from_millis(1))?;
+
+        self.dev.set_usb_parameters(65536)?;
+
+        // Set initial GPIO state: SS_N=HIGH, EN_N=HIGH, RST_N=HIGH
+        self.set_data_bits_absolute(SpiPin::SS_N | SpiPin::EN_N | SpiPin::RST_N)?;
+
+        // Enable SPI level shifter (EN_N is active low)
+        self.set_enable(true)?;
+
+        // Assert chip select briefly
+        self.set_chip_select(true)?;
+
+        // Assert and HOLD SMC Reset
+        // for NOR interaction we don't want the SMC to be active
+        self.set_reset(true)?;
+
+        // Release chip select
+        self.set_chip_select(false)?;
+        
+        // Setup clock frequency — conservative 5 kHz for init;
+        // ramped up after the SPI bridge is verified.
+        self.dev.set_clock(5_000)?;
+
+        Ok(())
     }
 
     fn reset(&mut self) -> Result<(), Error> {
         <Self as SpiBackend>::reset(self)
+    }
+}
+
+impl Drop for FtdiBackend {
+    fn drop(&mut self) {
+        // Release SMC Reset
+        self.set_reset(false).ok();
     }
 }
 

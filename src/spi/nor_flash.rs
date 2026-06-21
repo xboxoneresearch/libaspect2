@@ -42,6 +42,12 @@ impl<B: RawSpiBackend + GpioControl, C: ClockTrait + DelayNs + Clone> NorFlash<B
     /// (all-0xFF means the bus is floating; 0x00 means no device).
     pub fn init(&mut self) -> Result<JedecId, Error> {
         self.backend.initialize()?;
+
+        // Wake up chip from deep sleep and wait a bit
+        self.release_from_dpd()?;
+        self.clock.delay_ns(1_000_000);
+
+        // Read chip id
         let id = self.read_jedec_id()?;
         if !id.is_valid() {
             return Err(Error::NorInvalidJedecId(id));

@@ -239,14 +239,6 @@ fn run_nor(args: NorArgs, device: &str) -> anyhow::Result<()> {
     let backend = FtdiBackend::open(device)
         .map_err(|e| anyhow::anyhow!("Failed to open FTDI device {:?}: {e}", device))?;
     let mut flash = NorFlash::new(backend, StdClock);
-
-    flash.assert_reset()?;
-    let result = run_nor_ops(&mut flash, args);
-    flash.release_reset().ok();
-    result
-}
-
-fn run_nor_ops(flash: &mut NorFlash<FtdiBackend, StdClock>, args: NorArgs) -> anyhow::Result<()> {
     let jedec_id = flash
         .init()
         .map_err(|e| anyhow::anyhow!("NOR init failed: {e}"))?;
