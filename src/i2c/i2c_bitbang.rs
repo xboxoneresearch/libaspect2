@@ -195,31 +195,36 @@ impl I2c for I2cFtBitbang {
         address: u8,
         operations: &mut [Operation<'_>],
     ) -> Result<(), Self::Error> {
-        //self.i2c_start();
-        for op in operations {
-            self.i2c_start();
-            match op {
-                Operation::Read(rd) => {
-                    let ack = self.i2c_start_read(address);
-                    if !ack {
-                        return Err(ErrorKind::NoAcknowledge(NoAcknowledgeSource::Address));
+        let result = (|| {
+            for op in operations {
+                self.i2c_start();
+                match op {
+                    Operation::Read(rd) => {
+                        let ack = self.i2c_start_read(address);
+                        if !ack {
+                            return Err(ErrorKind::NoAcknowledge(NoAcknowledgeSource::Address));
+                        }
+                        let resp = self.i2c_read_bytes(rd.len());
+                        rd.copy_from_slice(&resp);
                     }
-                    let resp = self.i2c_read_bytes(rd.len());
-                    //println!("{resp:?}");
-                    rd.copy_from_slice(&resp);
-                }
-                Operation::Write(wr) => {
-                    let ack = self.i2c_start_write(address);
-                    if !ack {
-                        return Err(ErrorKind::NoAcknowledge(NoAcknowledgeSource::Address));
+                    Operation::Write(wr) => {
+                        let ack = self.i2c_start_write(address);
+                        if !ack {
+                            return Err(ErrorKind::NoAcknowledge(NoAcknowledgeSource::Address));
+                        }
+                        self.i2c_write_bytes(wr);
                     }
-                    self.i2c_write_bytes(&wr);
                 }
             }
-        }
+            Ok(())
+        })();
+
+        // Always issue STOP, even on NACK — otherwise the master leaves SCL
+        // held low mid-transaction, which wedges the target's I2C peripheral
+        // (it never sees a STOP, so it keeps NACKing every future transaction).
         self.i2c_stop();
 
-        Ok(())
+        result
     }
 }
 
