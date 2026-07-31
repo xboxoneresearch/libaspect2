@@ -54,11 +54,18 @@ impl I2cFtBitbang {
         self.gpio_write(self.gpio_val, self.gpio_dir);
     }
 
-    /* Set SCL high */
+    /* Set SCL high, then wait for the slave to release it (clock stretching) */
     fn scl_high(&mut self) {
         self.gpio_val |= I2C_SCL;
         self.gpio_dir &= !I2C_SCL; // input
         self.gpio_write(self.gpio_val, self.gpio_dir);
+
+        let deadline = Instant::now() + Duration::from_millis(50);
+        while self.gpio_read() & I2C_SCL == 0 {
+            if Instant::now() >= deadline {
+                break;
+            }
+        }
     }
 
     /* Set SCL low */
@@ -188,31 +195,36 @@ impl I2c for I2cFtBitbang {
         address: u8,
         operations: &mut [Operation<'_>],
     ) -> Result<(), Self::Error> {
-        //self.i2c_start();
-        for op in operations {
-            self.i2c_start();
-            match op {
-                Operation::Read(rd) => {
-                    let ack = self.i2c_start_read(address);
-                    if !ack {
-                        return Err(ErrorKind::NoAcknowledge(NoAcknowledgeSource::Address));
+        let result = (|| {
+            for op in operations {
+                self.i2c_start();
+                match op {
+                    Operation::Read(rd) => {
+                        let ack = self.i2c_start_read(address);
+                        if !ack {
+                            return Err(ErrorKind::NoAcknowledge(NoAcknowledgeSource::Address));
+                        }
+                        let resp = self.i2c_read_bytes(rd.len());
+                        rd.copy_from_slice(&resp);
                     }
-                    let resp = self.i2c_read_bytes(rd.len());
-                    //println!("{resp:?}");
-                    rd.copy_from_slice(&resp);
-                }
-                Operation::Write(wr) => {
-                    let ack = self.i2c_start_write(address);
-                    if !ack {
-                        return Err(ErrorKind::NoAcknowledge(NoAcknowledgeSource::Address));
+                    Operation::Write(wr) => {
+                        let ack = self.i2c_start_write(address);
+                        if !ack {
+                            return Err(ErrorKind::NoAcknowledge(NoAcknowledgeSource::Address));
+                        }
+                        self.i2c_write_bytes(wr);
                     }
-                    self.i2c_write_bytes(&wr);
                 }
             }
-        }
+            Ok(())
+        })();
+
+        // Always issue STOP, even on NACK — otherwise the master leaves SCL
+        // held low mid-transaction, which wedges the target's I2C peripheral
+        // (it never sees a STOP, so it keeps NACKing every future transaction).
         self.i2c_stop();
 
-        Ok(())
+        result
     }
 }
 

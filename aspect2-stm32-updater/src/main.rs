@@ -4,6 +4,7 @@ use binrw::{
     binrw,   // #[binrw] attribute
 };
 use clap::{Parser, Subcommand, ValueEnum};
+use embedded_hal::i2c::I2c;
 use indicatif::{ProgressBar, ProgressStyle};
 use libaspect2::{Ft4232h, I2cFtBitbang};
 use std::fmt::Display;
@@ -61,6 +62,13 @@ const USERAPP_OFFSET: usize = TOMBSTONE_UAPP_OFFSET + 0x200;
 const _USERAPP_SZ: usize = SECTION_USERAPP_SZ - 0x200;
 
 const STM32_BOOTLOADER_I2C_ADDR: u8 = 0x56;
+
+// Secondary I2C1 own-address (7-bit, unshifted): writing BOOTLOADER_TRIGGER_MAGIC
+// here reboots straight into the STM32 system bootloader (DFU), letting the
+// board be reflashed without physical button/SWD access.
+const BOOTLOADER_TRIGGER_I2C_ADDR: u8 = 0x39;
+// Magic bytes, MSB first: 0xB0 0x07 0xB0 0x07 ("B007 B007" / "BOOT BOOT")
+const BOOTLOADER_TRIGGER_MAGIC: u32 = 0xB007B007;
 
 #[binrw]
 #[brw(little)]
@@ -133,6 +141,8 @@ enum Command {
     Info,
     /// Wipe the whole flash memory
     Wipe,
+    /// Trigger the STM32 system bootloader (DFU) via I2C, without button/SWD access
+    Bootloader,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -154,6 +164,18 @@ fn main() -> Result<()> {
 
     let dev = Ft4232h::with_description("Facet2 FabA+ C")?;
     let mut i2c_if = I2cFtBitbang::new(dev);
+
+    if let Command::Bootloader = args.command {
+        println!("[!] Triggering STM32 system bootloader (DFU)...");
+        i2c_if
+            .write(
+                BOOTLOADER_TRIGGER_I2C_ADDR,
+                &BOOTLOADER_TRIGGER_MAGIC.to_be_bytes(),
+            )
+            .map_err(|e| anyhow!("I2C write failed: {e:?}"))?;
+        println!("[*] Done");
+        return Ok(());
+    }
 
     let mut config = stm32_bootloader_client::Config::i2c_address(STM32_BOOTLOADER_I2C_ADDR);
     config.mass_erase_max_ns = Duration::from_secs(1).as_nanos() as u64;
@@ -274,7 +296,13 @@ fn main() -> Result<()> {
             stm32.erase_flash(&mut delay)?;
             println!("[*] Done");
         }
+        Command::Bootloader => unreachable!("handled before Stm32 connection is established"),
         Command::Info => {
+            println!(
+                "ChipID: {:#x}, BL: {:#x}",
+                stm32.get_chip_id()?,
+                stm32.get_bootloader_version()?
+            );
             let mut out = [0; TOMBSTONE_SZ];
 
             for (ts_offset, magic, data_offset) in [
