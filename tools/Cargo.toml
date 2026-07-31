@@ -13,6 +13,7 @@ libaspect2 = { path = "../", features = ["ftdi"] }
 clap = { version = "4.5.57", features = ["derive"]}
 ctrlc = "3.5.2"
 hex.workspace = true
+embedded-hal = "1.0.0"
 
 [[bin]]
 name = "postcode_emu"
@@ -22,3 +23,6 @@ name = "soundchip_cli"
 
 [[bin]]
 name = "flash_cli"
+
+[[bin]]
+name = "i2c_scan"
