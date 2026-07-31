@@ -54,11 +54,18 @@ impl I2cFtBitbang {
         self.gpio_write(self.gpio_val, self.gpio_dir);
     }
 
-    /* Set SCL high */
+    /* Set SCL high, then wait for the slave to release it (clock stretching) */
     fn scl_high(&mut self) {
         self.gpio_val |= I2C_SCL;
         self.gpio_dir &= !I2C_SCL; // input
         self.gpio_write(self.gpio_val, self.gpio_dir);
+
+        let deadline = Instant::now() + Duration::from_millis(50);
+        while self.gpio_read() & I2C_SCL == 0 {
+            if Instant::now() >= deadline {
+                break;
+            }
+        }
     }
 
     /* Set SCL low */
