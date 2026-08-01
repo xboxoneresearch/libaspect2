@@ -217,7 +217,7 @@ fn main() -> Result<()> {
                 return Err(anyhow!("Verification failed"));
             }
 
-            let mut f = File::open(binary)?;
+            let mut f = File::create(binary)?;
             f.write_all(&filebuf)?;
             println!("[*] Done");
         }
