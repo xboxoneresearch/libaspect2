@@ -7,41 +7,27 @@ on:
 #    branches: [ main, master ]
 
 jobs:
-  test-crates:
-    name: Build & Test crates
+  test:
+    name: Build & Test workspace
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        crate: [ "i2c", "emmc_spi" ]
-        rust: [ "stable" ]
-
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo registry and target
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            ${{ matrix.crate }}/target
-          key: ${{ runner.os }}-cargo-${{ matrix.crate }}-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Setup Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ matrix.rust }}
-          components: clippy, rustfmt
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build (release)
-        run: cargo build --manifest-path ${{ matrix.crate }}/Cargo.toml --release --verbose
+        run: cargo build --workspace --release --all-features --verbose
 
       - name: Run tests
-        run: cargo test --manifest-path ${{ matrix.crate }}/Cargo.toml --verbose --all-features
-
-      - name: Upload built artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.crate }}-release
-          path: ${{ matrix.crate }}/target/release
+        run: cargo test --workspace --all-features --verbose
