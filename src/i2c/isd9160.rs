@@ -1,6 +1,8 @@
+use crate::prelude::*;
 use embedded_hal::i2c::I2c;
 
 pub const FLASH_SIZE: usize = 0x24400; // 145KB
+pub const READ_CHUNK_SIZE: usize = 64;
 const STATUS_PREFIX_SZ: usize = 2;
 
 #[allow(non_camel_case_types)]
@@ -17,9 +19,9 @@ pub enum Isd9160Commands {
     CMD_RESET = 0x4A,
 }
 
-impl Into<u8> for Isd9160Commands {
-    fn into(self) -> u8 {
-        self as u8
+impl From<Isd9160Commands> for u8 {
+    fn from(val: Isd9160Commands) -> Self {
+        val as u8
     }
 }
 
@@ -55,9 +57,9 @@ pub enum Isd9160Registers {
     REG_ADDRMSK3 = 0x30,
 }
 
-impl Into<u8> for Isd9160Registers {
-    fn into(self) -> u8 {
-        self as u8
+impl From<Isd9160Registers> for u8 {
+    fn from(val: Isd9160Registers) -> Self {
+        val as u8
     }
 }
 
@@ -78,39 +80,35 @@ pub enum Isd9160Sounds {
     PLOPP_LOUDER = 0x08,
 }
 
-impl Into<u8> for Isd9160Sounds {
-    fn into(self) -> u8 {
-        self as u8
+impl From<Isd9160Sounds> for u8 {
+    fn from(val: Isd9160Sounds) -> Self {
+        val as u8
     }
 }
 
-pub struct Isd9160<T>
-{
+pub struct Isd9160<T> {
     device: T,
-    read_chunk_size: usize,
     position: u64,
+    write_reg_buf: [u8; 6],
 }
 
 impl<T> Isd9160<T>
 where
-    T: I2c
+    T: I2c,
 {
     /// Nuvoton ISD9160 Soundcorder Chip (RF Unit)
     pub const I2C_ADDR: u8 = 0x5A;
 
     pub fn new(device: T) -> Self {
         Self {
-            device: device,
-            read_chunk_size: 0x40,
+            device,
             position: 0,
+            write_reg_buf: [0u8; _],
         }
     }
 
-    pub fn flash_size(&self) -> usize { FLASH_SIZE }
-    pub fn read_chunk_size(&self) -> usize { self.read_chunk_size }
-    pub fn set_chunk_size(&mut self, value: usize)
-    {
-        self.read_chunk_size = value
+    pub fn flash_size(&self) -> usize {
+        FLASH_SIZE
     }
 
     pub fn read_interrupt(&mut self) -> u16 {
@@ -134,10 +132,11 @@ where
     }
 
     pub fn write_register<U: Into<u8>>(&mut self, register: U, data: &[u8]) {
-        let mut cmd = vec![Isd9160Commands::CMD_REG_WRITE.into(), register.into()];
-        cmd.extend_from_slice(&data);
+        self.write_reg_buf[0] = Isd9160Commands::CMD_REG_WRITE.into();
+        self.write_reg_buf[1] = register.into();
+        self.write_reg_buf[2..2 + data.len()].copy_from_slice(data);
         self.device
-            .write(Self::I2C_ADDR, &cmd)
+            .write(Self::I2C_ADDR, &self.write_reg_buf)
             .expect("Failed to write register");
     }
 
@@ -168,24 +167,25 @@ where
     }
 
     /// This reads 6 bytes at a time
-    fn read_data(&mut self, addr: u32) -> Vec<u8> {
-        let mut buf = vec![0u8; self.read_chunk_size + STATUS_PREFIX_SZ];
+    fn read_data(&mut self, addr: u32) -> [u8; READ_CHUNK_SIZE] {
+        let mut buf = [0u8; READ_CHUNK_SIZE + STATUS_PREFIX_SZ];
 
-        let mut cmd = vec![Isd9160Commands::CMD_FLASH_READ.into()];
+        let mut cmd: [u8; 5] = [Isd9160Commands::CMD_FLASH_READ.into(), 0, 0, 0, 0];
         let addr_bytes = addr.to_le_bytes();
-        cmd.extend(&addr_bytes);
+        cmd[1..].copy_from_slice(&addr_bytes);
 
         self.device
             .write_read(Self::I2C_ADDR, &cmd, &mut buf)
             .expect("Failed to read data");
 
-        buf[STATUS_PREFIX_SZ..].to_vec()
+        buf[STATUS_PREFIX_SZ..].try_into().unwrap()
     }
 }
 
+#[cfg(feature = "std")]
 impl<T> std::io::Seek for Isd9160<T>
 where
-    T: I2c
+    T: I2c,
 {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
         use std::io::SeekFrom;
@@ -193,28 +193,46 @@ where
             SeekFrom::Start(offset) => offset,
             SeekFrom::End(offset) => {
                 let end = FLASH_SIZE as i64;
-                let np = end.checked_add(offset).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Seek out of bounds"))?;
-                if np < 0 { return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Seek before start")); }
+                let np = end.checked_add(offset).ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "Seek out of bounds")
+                })?;
+                if np < 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "Seek before start",
+                    ));
+                }
                 np as u64
             }
             SeekFrom::Current(offset) => {
                 let cur = self.position as i64;
-                let np = cur.checked_add(offset).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Seek out of bounds"))?;
-                if np < 0 { return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Seek before start")); }
+                let np = cur.checked_add(offset).ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "Seek out of bounds")
+                })?;
+                if np < 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "Seek before start",
+                    ));
+                }
                 np as u64
             }
         };
         if new_pos > FLASH_SIZE as u64 {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Seek past end of flash"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Seek past end of flash",
+            ));
         }
         self.position = new_pos;
         Ok(self.position)
     }
 }
 
+#[cfg(feature = "std")]
 impl<T> std::io::Read for Isd9160<T>
 where
-    T: I2c
+    T: I2c,
 {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.position >= FLASH_SIZE as u64 {
@@ -227,8 +245,8 @@ where
             let addr = self.position as u32;
             let chunk = self.read_data(addr);
             let chunk_start = 0;
-            let chunk_end = (to_read - total_read).min(self.read_chunk_size);
-            buf[total_read..total_read+chunk_end].copy_from_slice(&chunk[chunk_start..chunk_end]);
+            let chunk_end = (to_read - total_read).min(READ_CHUNK_SIZE);
+            buf[total_read..total_read + chunk_end].copy_from_slice(&chunk[chunk_start..chunk_end]);
             self.position += chunk_end as u64;
             total_read += chunk_end;
         }
