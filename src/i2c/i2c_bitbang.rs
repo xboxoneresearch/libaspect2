@@ -13,6 +13,7 @@ pub struct I2cFtBitbang {
     device: Ft4232h,
     gpio_val: u8,
     gpio_dir: u8,
+    gpio_dir_hw: Option<u8>,
 }
 
 impl I2cFtBitbang {
@@ -21,13 +22,19 @@ impl I2cFtBitbang {
             device,
             gpio_val: I2C_MASK, // Both high
             gpio_dir: 0,        // Both as input (high, open-drain)
+            gpio_dir_hw: None,
         }
     }
 }
 
 impl I2cFtBitbang {
     fn gpio_write(&mut self, values: u8, direction: u8) {
-        self.device.set_bit_mode(direction, BITMODE).unwrap();
+        // skip set_bit_mode when the direction mask hasn't
+        // actually changed since the last call.
+        if self.gpio_dir_hw != Some(direction) {
+            self.device.set_bit_mode(direction, BITMODE).unwrap();
+            self.gpio_dir_hw = Some(direction);
+        }
         self.device.write(&[values]).unwrap();
     }
 
@@ -36,94 +43,95 @@ impl I2cFtBitbang {
         bits
     }
 
-    fn delay_ns(&mut self, ns: u64) {
-        std::thread::sleep(Duration::from_nanos(ns));
-    }
-
     /* Drive SDA high (release = input) */
     fn sda_high(&mut self) {
+        if self.gpio_val & I2C_SDA != 0 && self.gpio_dir & I2C_SDA == 0 {
+            return;
+        }
         self.gpio_val |= I2C_SDA;
         self.gpio_dir &= !I2C_SDA; // input
         self.gpio_write(self.gpio_val, self.gpio_dir);
     }
 
+    fn set_sda(&mut self, high: bool) {
+        if high {
+            self.sda_high();
+        } else {
+            self.sda_low();
+        }
+    }
+
     /* Drive SDA low */
     fn sda_low(&mut self) {
+        if self.gpio_val & I2C_SDA == 0 && self.gpio_dir & I2C_SDA != 0 {
+            return;
+        }
         self.gpio_val &= !I2C_SDA;
         self.gpio_dir |= I2C_SDA; // output
         self.gpio_write(self.gpio_val, self.gpio_dir);
     }
 
-    /* Set SCL high, then wait for the slave to release it (clock stretching) */
-    fn scl_high(&mut self) {
+    /* Set SCL high, then wait for the slave to release it (clock stretching).
+     * Returns the last-sampled pin byte so callers that need to read SDA
+     * right after a clock edge (ACK/data bit sampling) can reuse this read
+     * instead of issuing a second one. */
+    fn scl_high(&mut self) -> u8 {
+        if self.gpio_val & I2C_SCL != 0 && self.gpio_dir & I2C_SCL == 0 {
+            return self.gpio_val;
+        }
         self.gpio_val |= I2C_SCL;
         self.gpio_dir &= !I2C_SCL; // input
         self.gpio_write(self.gpio_val, self.gpio_dir);
 
         let deadline = Instant::now() + Duration::from_millis(50);
-        while self.gpio_read() & I2C_SCL == 0 {
+        let mut pins = self.gpio_read();
+        while pins & I2C_SCL == 0 {
             if Instant::now() >= deadline {
                 break;
             }
+            pins = self.gpio_read();
         }
+        pins
     }
 
     /* Set SCL low */
     fn scl_low(&mut self) {
+        if self.gpio_val & I2C_SCL == 0 && self.gpio_dir & I2C_SCL != 0 {
+            return;
+        }
         self.gpio_val &= !I2C_SCL;
         self.gpio_dir |= I2C_SCL; // output
         self.gpio_write(self.gpio_val, self.gpio_dir);
     }
 
     fn i2c_start(&mut self) {
-        //let mut dst = vec![];
         // SDA descending while SCL is HIGH.
         self.sda_high();
         self.scl_high();
-        self.delay_ns(800);
         self.sda_low();
-        self.delay_ns(800);
         self.scl_low();
-        self.delay_ns(800);
     }
 
     fn i2c_stop(&mut self) {
         // SDA rasing while SCL is HIGH.
         self.sda_low();
-        self.delay_ns(800);
         self.scl_high();
-        self.delay_ns(800);
         self.sda_high();
-        self.delay_ns(800);
     }
 
     fn i2c_tx(&mut self, byte: u8) -> bool {
         let mut byte = byte;
         for _ in 0..8 {
-            if byte & 0x80 != 0 {
-                self.sda_high();
-            } else {
-                self.sda_low()
-            };
+            self.set_sda(byte & 0x80 != 0);
             byte <<= 1;
-            self.delay_ns(400);
             self.scl_high();
-            self.delay_ns(800);
             self.scl_low();
-            self.delay_ns(400);
         }
 
-        // Release SDA for ACK
         self.sda_high();
-        self.delay_ns(400);
-        self.scl_high();
-        self.delay_ns(800);
-
-        // Sample SDA
-        let pins = self.gpio_read();
+        let pins = self.scl_high();
 
         self.scl_low();
-        self.delay_ns(400);
         pins & I2C_SDA == 0
     }
 
@@ -133,16 +141,12 @@ impl I2cFtBitbang {
         self.sda_high(); // release SDA
         for _ in 0..8 {
             data <<= 1;
-            self.scl_high();
-            self.delay_ns(800);
-
-            let pins = self.gpio_read();
+            let pins = self.scl_high();
             if pins & I2C_SDA != 0 {
                 data |= 1;
             }
 
             self.scl_low();
-            self.delay_ns(800);
         }
 
         // Send ACK/NACK
@@ -151,11 +155,8 @@ impl I2cFtBitbang {
         } else {
             self.sda_low()
         };
-        self.delay_ns(400);
         self.scl_high();
-        self.delay_ns(800);
         self.scl_low();
-        self.delay_ns(400);
         self.sda_high(); // release
 
         data
